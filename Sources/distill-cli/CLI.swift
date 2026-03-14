@@ -32,6 +32,9 @@ struct Distill: AsyncParsableCommand {
     @Option(name: .long, help: "Path to config file (default: ~/.distill/config.yaml).")
     var config: String?
 
+    @Flag(name: .long, help: "Extract key frames from the video (requires ffmpeg).")
+    var frames: Bool = false
+
     mutating func run() async throws {
         // Load config file
         let configFile: ConfigFile?
@@ -47,6 +50,7 @@ struct Distill: AsyncParsableCommand {
             url: url,
             cliOutput: output,
             cliCookies: cookiesFromBrowser,
+            cliFrames: frames,
             configFile: configFile
         )
 
@@ -62,6 +66,9 @@ struct Distill: AsyncParsableCommand {
         )
 
         let tagGenerator: TagGenerator? = cfg.autoTag ? TagGenerator(provider: provider) : nil
+        let frameExtractor: FrameExtractor? = cfg.framesEnabled
+            ? FrameExtractor(config: cfg.frameConfig, cookiesFromBrowser: cfg.cookiesFromBrowser)
+            : nil
 
         let pipeline = Pipeline(
             metadataResolver: MetadataResolver(cookiesFromBrowser: cfg.cookiesFromBrowser),
@@ -69,6 +76,7 @@ struct Distill: AsyncParsableCommand {
             summarizer: Summarizer(provider: provider),
             outputWriter: OutputWriter(),
             tagGenerator: tagGenerator,
+            frameExtractor: frameExtractor,
             configuration: cfg
         )
 

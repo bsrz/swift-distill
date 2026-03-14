@@ -6,6 +6,7 @@ public struct Pipeline: Sendable {
     private let summarizer: any Summarizing
     private let outputWriter: any OutputWriting
     private let tagGenerator: (any TagGenerating)?
+    private let frameExtractor: (any FrameExtracting)?
     private let configuration: Configuration
 
     public init(
@@ -14,6 +15,7 @@ public struct Pipeline: Sendable {
         summarizer: any Summarizing,
         outputWriter: any OutputWriting,
         tagGenerator: (any TagGenerating)? = nil,
+        frameExtractor: (any FrameExtracting)? = nil,
         configuration: Configuration
     ) {
         self.metadataResolver = metadataResolver
@@ -21,6 +23,7 @@ public struct Pipeline: Sendable {
         self.summarizer = summarizer
         self.outputWriter = outputWriter
         self.tagGenerator = tagGenerator
+        self.frameExtractor = frameExtractor
         self.configuration = configuration
     }
 
@@ -33,7 +36,7 @@ public struct Pipeline: Sendable {
         guard let apiKey = configuration.apiKey, !apiKey.isEmpty else {
             throw DistillError.missingAPIKey
         }
-        _ = apiKey // used for validation only; provider already has it
+        _ = apiKey
 
         // 3. Resolve metadata
         let metadataSpinner = Spinner(message: "Fetching video metadata...")
@@ -47,16 +50,20 @@ public struct Pipeline: Sendable {
             throw error
         }
 
-        // 4. Acquire transcript
-        let transcriptSpinner = Spinner(message: "Extracting transcript...")
-        await transcriptSpinner.start()
+        // 4. Acquire transcript + extract frames (concurrently if --frames)
         let transcript: Transcript
-        do {
-            transcript = try await transcriptAcquirer.acquire(metadata: metadata)
-            await transcriptSpinner.succeed("Extracted transcript (\(transcript.segments.count) segments, \(transcript.source.rawValue))")
-        } catch {
-            await transcriptSpinner.fail("Failed to extract transcript")
-            throw error
+        let frames: [ExtractedFrame]
+
+        if configuration.framesEnabled, let frameExtractor {
+            let result = try await acquireTranscriptAndFrames(
+                metadata: metadata,
+                frameExtractor: frameExtractor
+            )
+            transcript = result.transcript
+            frames = result.frames
+        } else {
+            transcript = try await acquireTranscript(metadata: metadata)
+            frames = []
         }
 
         // 5. Generate tags (if enabled)
@@ -70,20 +77,31 @@ public struct Pipeline: Sendable {
                 await tagSpinner.succeed("Generated \(generatedTags.count) tags")
             } catch {
                 await tagSpinner.fail("Tag generation failed (continuing with default tags)")
-                // Non-fatal — continue with default tags
             }
         }
 
-        // 6. Summarize
+        // 6. Build frames table for prompt
+        let framesPromptSection = buildFramesPromptSection(frames: frames, metadata: metadata)
+
+        // 7. Summarize
         let summarySpinner = Spinner(message: "Summarizing with \(configuration.model)...")
         await summarySpinner.start()
         let summary: Summary
         do {
             let prompt = try PromptLoader.loadDefault()
+            let renderedPrompt = PromptLoader.render(
+                template: prompt,
+                title: metadata.title,
+                channel: metadata.channel,
+                duration: metadata.durationString,
+                transcript: transcript.fullText,
+                frames: framesPromptSection,
+                language: "en"
+            )
             summary = try await summarizer.summarize(
                 transcript: transcript,
                 metadata: metadata,
-                prompt: prompt
+                prompt: renderedPrompt
             )
             await summarySpinner.succeed("Summarization complete")
         } catch {
@@ -95,7 +113,7 @@ public struct Pipeline: Sendable {
         let costEstimate = Double(summary.inputTokens * 3 + summary.outputTokens * 15) / 1_000_000.0
         log("Tokens: \(summary.inputTokens) in / \(summary.outputTokens) out (~$\(String(format: "%.4f", costEstimate)))")
 
-        // 7. Resolve output path
+        // 8. Resolve output path
         let outputPath = configuration.resolvedOutputPath(for: metadata)
         guard !outputPath.isEmpty else {
             throw DistillError.configurationError(
@@ -103,7 +121,7 @@ public struct Pipeline: Sendable {
             )
         }
 
-        // 8. Write output
+        // 9. Write output
         let writeSpinner = Spinner(message: "Writing output...")
         await writeSpinner.start()
         do {
@@ -119,8 +137,104 @@ public struct Pipeline: Sendable {
             throw error
         }
 
-        // 9. Print output path to stdout
+        // 10. Print output path to stdout
         print(outputPath)
+    }
+
+    // MARK: - Private
+
+    private func acquireTranscript(metadata: VideoMetadata) async throws -> Transcript {
+        let spinner = Spinner(message: "Extracting transcript...")
+        await spinner.start()
+        do {
+            let transcript = try await transcriptAcquirer.acquire(metadata: metadata)
+            await spinner.succeed("Extracted transcript (\(transcript.segments.count) segments, \(transcript.source.rawValue))")
+            return transcript
+        } catch {
+            await spinner.fail("Failed to extract transcript")
+            throw error
+        }
+    }
+
+    /// Run transcript acquisition and frame extraction concurrently via TaskGroup.
+    /// If transcript fails, frame extraction is cancelled.
+    private func acquireTranscriptAndFrames(
+        metadata: VideoMetadata,
+        frameExtractor: any FrameExtracting
+    ) async throws -> (transcript: Transcript, frames: [ExtractedFrame]) {
+        enum StageResult: Sendable {
+            case transcript(Transcript)
+            case frames([ExtractedFrame])
+        }
+
+        let attachmentsDir = configuration.resolvedAttachmentsDir(for: metadata)
+            ?? FileManager.default.temporaryDirectory.appendingPathComponent("distill-frames").path
+
+        return try await withThrowingTaskGroup(of: StageResult.self) { group in
+            // Transcript task
+            group.addTask {
+                let spinner = Spinner(message: "Extracting transcript...")
+                await spinner.start()
+                do {
+                    let transcript = try await self.transcriptAcquirer.acquire(metadata: metadata)
+                    await spinner.succeed("Extracted transcript (\(transcript.segments.count) segments, \(transcript.source.rawValue))")
+                    return .transcript(transcript)
+                } catch {
+                    await spinner.fail("Failed to extract transcript")
+                    throw error
+                }
+            }
+
+            // Frame extraction task
+            group.addTask {
+                return .frames(try await frameExtractor.extract(metadata: metadata, to: attachmentsDir))
+            }
+
+            var transcript: Transcript?
+            var frames: [ExtractedFrame] = []
+
+            for try await result in group {
+                switch result {
+                case .transcript(let t):
+                    transcript = t
+                case .frames(let f):
+                    frames = f
+                }
+            }
+
+            guard let transcript else {
+                throw DistillError.transcriptNotAvailable
+            }
+
+            return (transcript, frames)
+        }
+    }
+
+    private func buildFramesPromptSection(frames: [ExtractedFrame], metadata: VideoMetadata) -> String {
+        guard !frames.isEmpty else { return "" }
+
+        let syntax = configuration.imageSyntax
+        let syntaxNote = syntax == .wikilink
+            ? "Use Obsidian wikilink syntax for images: ![[path/filename.png]]"
+            : "Use standard markdown syntax for images: ![alt text](path/filename.png)"
+
+        var section = """
+        ## Extracted Frames
+
+        The following frames were extracted from the video. \(syntaxNote)
+        Choose the most relevant frames and place them inline within your section summaries.
+
+        | Timestamp | Filename |
+        |-----------|----------|
+
+        """
+
+        for frame in frames {
+            let relativePath = configuration.relativeAttachmentPath(for: metadata, filename: frame.filename)
+            section += "| \(frame.timestampString) | \(relativePath) |\n"
+        }
+
+        return section
     }
 
     private func log(_ message: String) {

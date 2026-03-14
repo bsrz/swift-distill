@@ -267,6 +267,293 @@ struct PipelineTests {
     }
 }
 
+// MARK: - Frame Extraction Tests
+
+@Suite("FrameExtractor")
+struct FrameExtractorTests {
+    @Test func parseSceneFramesExtractsTimestamps() {
+        let stderr = """
+        [Parsed_showinfo_1 @ 0x1234] n:   0 pts:   1234 pts_time:12.34 fmt:yuv420p sar:1/1 s:1920x1080 i:P
+        [Parsed_showinfo_1 @ 0x1234] n:   1 pts:   5678 pts_time:56.78 fmt:yuv420p sar:1/1 s:1920x1080 i:P
+        """
+
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("test-scene-\(UUID())")
+        try! FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        // Create fake scene frame files
+        let file1 = tempDir.appendingPathComponent("scene-0001.png")
+        let file2 = tempDir.appendingPathComponent("scene-0002.png")
+        try! Data().write(to: file1)
+        try! Data().write(to: file2)
+
+        let extractor = FrameExtractor(config: FrameConfig())
+        let frames = extractor.parseSceneFrames(stderr: stderr, directory: tempDir)
+
+        #expect(frames.count == 2)
+        #expect(frames[0].timestamp == 12.34)
+        #expect(frames[1].timestamp == 56.78)
+        #expect(frames[0].filename == "scene-0001.png")
+        #expect(frames[1].filename == "scene-0002.png")
+    }
+
+    @Test func parseSceneFramesHandlesNoMatches() {
+        let stderr = "Some random ffmpeg output\nwith no showinfo lines"
+
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("test-scene-empty-\(UUID())")
+        try! FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let extractor = FrameExtractor(config: FrameConfig())
+        let frames = extractor.parseSceneFrames(stderr: stderr, directory: tempDir)
+
+        #expect(frames.isEmpty)
+    }
+
+    @Test func extractedFrameTimestampString() {
+        let frame1 = ExtractedFrame(timestamp: 0, filename: "f.png", path: "/f.png")
+        #expect(frame1.timestampString == "0:00")
+
+        let frame2 = ExtractedFrame(timestamp: 65, filename: "f.png", path: "/f.png")
+        #expect(frame2.timestampString == "1:05")
+
+        let frame3 = ExtractedFrame(timestamp: 3661, filename: "f.png", path: "/f.png")
+        #expect(frame3.timestampString == "61:01")
+    }
+}
+
+@Suite("FrameConfig")
+struct FrameConfigTests {
+    @Test func defaultValues() {
+        let config = FrameConfig()
+        #expect(config.maxFrames == 20)
+        #expect(config.intervalSeconds == 60)
+        #expect(config.sceneDetection == true)
+        #expect(config.sceneThreshold == 0.4)
+    }
+
+    @Test func customValues() {
+        let config = FrameConfig(maxFrames: 10, intervalSeconds: 30, sceneDetection: false, sceneThreshold: 0.6)
+        #expect(config.maxFrames == 10)
+        #expect(config.intervalSeconds == 30)
+        #expect(config.sceneDetection == false)
+        #expect(config.sceneThreshold == 0.6)
+    }
+}
+
+@Suite("Configuration.frames")
+struct ConfigurationFrameTests {
+    @Test func framesDisabledByDefault() {
+        let cfg = Configuration.merged(
+            url: "https://www.youtube.com/watch?v=test",
+            cliOutput: "/tmp/test.md",
+            cliCookies: nil,
+            configFile: nil
+        )
+        #expect(cfg.framesEnabled == false)
+    }
+
+    @Test func framesEnabledViaCLI() {
+        let cfg = Configuration.merged(
+            url: "https://www.youtube.com/watch?v=test",
+            cliOutput: "/tmp/test.md",
+            cliCookies: nil,
+            cliFrames: true,
+            configFile: nil
+        )
+        #expect(cfg.framesEnabled == true)
+    }
+
+    @Test func frameConfigFromConfigFile() {
+        let configFile = ConfigFile(
+            frames: ConfigFile.FramesConfig(
+                max_frames: 10,
+                interval_seconds: 30,
+                scene_detection: false,
+                scene_threshold: 0.6
+            )
+        )
+        let cfg = Configuration.merged(
+            url: "https://www.youtube.com/watch?v=test",
+            cliOutput: "/tmp/test.md",
+            cliCookies: nil,
+            cliFrames: true,
+            configFile: configFile
+        )
+        #expect(cfg.frameConfig.maxFrames == 10)
+        #expect(cfg.frameConfig.intervalSeconds == 30)
+        #expect(cfg.frameConfig.sceneDetection == false)
+        #expect(cfg.frameConfig.sceneThreshold == 0.6)
+    }
+
+    @Test func imageSyntaxFromConfigFile() {
+        let configFile = ConfigFile(
+            obsidian: ConfigFile.ObsidianConfig(image_syntax: "wikilink")
+        )
+        let cfg = Configuration.merged(
+            url: "https://www.youtube.com/watch?v=test",
+            cliOutput: "/tmp/test.md",
+            cliCookies: nil,
+            configFile: configFile
+        )
+        #expect(cfg.imageSyntax == .wikilink)
+    }
+
+    @Test func resolvedAttachmentsDir() {
+        let cfg = Configuration(
+            url: "https://www.youtube.com/watch?v=test",
+            outputPath: "/tmp/test.md",
+            vaultPath: "/tmp/vault",
+            attachmentsFolder: "YouTube/attachments"
+        )
+        let dir = cfg.resolvedAttachmentsDir(for: testMetadata)
+        #expect(dir == "/tmp/vault/YouTube/attachments/me-at-the-zoo")
+    }
+
+    @Test func relativeAttachmentPath() {
+        let cfg = Configuration(
+            url: "https://www.youtube.com/watch?v=test",
+            outputPath: "/tmp/test.md"
+        )
+        let path = cfg.relativeAttachmentPath(for: testMetadata, filename: "frame-001.png")
+        #expect(path == "attachments/me-at-the-zoo/frame-001.png")
+    }
+}
+
+// MARK: - Pipeline with Frames Tests
+
+@Suite("Pipeline.frames")
+struct PipelineFrameTests {
+    @Test func pipelineRunsWithFrameExtractor() async throws {
+        nonisolated(unsafe) var order: [String] = []
+        let lock = NSLock()
+
+        @Sendable func record(_ stage: String) {
+            lock.lock()
+            order.append(stage)
+            lock.unlock()
+        }
+
+        struct RecordingMetadataResolver: MetadataResolving {
+            let metadata: VideoMetadata
+            let record: @Sendable (String) -> Void
+            func resolve(url: String) async throws -> VideoMetadata {
+                record("metadata")
+                return metadata
+            }
+        }
+
+        struct RecordingTranscriptAcquirer: TranscriptAcquiring {
+            let transcript: Transcript
+            let record: @Sendable (String) -> Void
+            func acquire(metadata: VideoMetadata) async throws -> Transcript {
+                record("transcript")
+                return transcript
+            }
+        }
+
+        struct RecordingSummarizer: Summarizing {
+            let summary: Summary
+            let record: @Sendable (String) -> Void
+            func summarize(transcript: Transcript, metadata: VideoMetadata, prompt: String) async throws -> Summary {
+                record("summarize")
+                return summary
+            }
+        }
+
+        struct MockFrameExtractor: FrameExtracting {
+            let record: @Sendable (String) -> Void
+            func extract(metadata: VideoMetadata, to attachmentsDir: String) async throws -> [ExtractedFrame] {
+                record("frames")
+                return [
+                    ExtractedFrame(timestamp: 10, filename: "frame-001.png", path: "/tmp/frame-001.png"),
+                    ExtractedFrame(timestamp: 60, filename: "frame-002.png", path: "/tmp/frame-002.png"),
+                ]
+            }
+        }
+
+        let outputPath = FileManager.default.temporaryDirectory
+            .appendingPathComponent("test-frames-\(UUID()).md").path
+
+        let pipeline = Pipeline(
+            metadataResolver: RecordingMetadataResolver(metadata: testMetadata, record: record),
+            transcriptAcquirer: RecordingTranscriptAcquirer(transcript: testTranscript, record: record),
+            summarizer: RecordingSummarizer(summary: testSummary, record: record),
+            outputWriter: MockOutputWriter { _, _, _, _ in record("write") },
+            frameExtractor: MockFrameExtractor(record: record),
+            configuration: Configuration(
+                url: "https://www.youtube.com/watch?v=jNQXAC9IVRw",
+                outputPath: outputPath,
+                apiKeyEnvVar: "TEST_API_KEY_FRAMES",
+                framesEnabled: true,
+                frameConfig: FrameConfig()
+            )
+        )
+
+        setenv("TEST_API_KEY_FRAMES", "test-key", 1)
+        defer { unsetenv("TEST_API_KEY_FRAMES") }
+
+        try await pipeline.run()
+
+        // metadata always first, write always last
+        #expect(order.first == "metadata")
+        #expect(order.last == "write")
+        // transcript and frames run concurrently, both must happen before summarize
+        #expect(order.contains("transcript"))
+        #expect(order.contains("frames"))
+        #expect(order.contains("summarize"))
+
+        try? FileManager.default.removeItem(atPath: outputPath)
+    }
+
+    @Test func pipelineSkipsFramesWhenDisabled() async throws {
+        nonisolated(unsafe) var stages: [String] = []
+        let lock = NSLock()
+
+        @Sendable func record(_ stage: String) {
+            lock.lock()
+            stages.append(stage)
+            lock.unlock()
+        }
+
+        struct TrackingFrameExtractor: FrameExtracting {
+            let record: @Sendable (String) -> Void
+            func extract(metadata: VideoMetadata, to attachmentsDir: String) async throws -> [ExtractedFrame] {
+                record("frames")
+                return []
+            }
+        }
+
+        let outputPath = FileManager.default.temporaryDirectory
+            .appendingPathComponent("test-noframes-\(UUID()).md").path
+
+        let pipeline = Pipeline(
+            metadataResolver: MockMetadataResolver(metadata: testMetadata),
+            transcriptAcquirer: MockTranscriptAcquirer(transcript: testTranscript),
+            summarizer: MockSummarizer(summary: testSummary),
+            outputWriter: MockOutputWriter { _, _, _, _ in record("write") },
+            frameExtractor: TrackingFrameExtractor(record: record),
+            configuration: Configuration(
+                url: "https://www.youtube.com/watch?v=jNQXAC9IVRw",
+                outputPath: outputPath,
+                apiKeyEnvVar: "TEST_API_KEY_NOFRAMES",
+                framesEnabled: false
+            )
+        )
+
+        setenv("TEST_API_KEY_NOFRAMES", "test-key", 1)
+        defer { unsetenv("TEST_API_KEY_NOFRAMES") }
+
+        try await pipeline.run()
+
+        #expect(!stages.contains("frames"))
+
+        try? FileManager.default.removeItem(atPath: outputPath)
+    }
+}
+
 @Suite("VideoMetadata")
 struct VideoMetadataTests {
     @Test func publishedDateFormat() {

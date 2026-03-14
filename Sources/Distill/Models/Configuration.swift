@@ -12,6 +12,15 @@ public struct Configuration: Sendable {
     public let vaultPath: String?
     public let vaultFolder: String?
     public let filenameFormat: String
+    public let framesEnabled: Bool
+    public let frameConfig: FrameConfig
+    public let attachmentsFolder: String
+    public let imageSyntax: ImageSyntax
+
+    public enum ImageSyntax: String, Sendable {
+        case markdown
+        case wikilink
+    }
 
     public var apiKey: String? {
         ProcessInfo.processInfo.environment[apiKeyEnvVar]
@@ -28,7 +37,11 @@ public struct Configuration: Sendable {
         autoTag: Bool = false,
         vaultPath: String? = nil,
         vaultFolder: String? = nil,
-        filenameFormat: String = "{date}-{slug}"
+        filenameFormat: String = "{date}-{slug}",
+        framesEnabled: Bool = false,
+        frameConfig: FrameConfig = FrameConfig(),
+        attachmentsFolder: String = "YouTube/attachments",
+        imageSyntax: ImageSyntax = .markdown
     ) {
         self.url = url
         self.outputPath = outputPath
@@ -41,17 +54,18 @@ public struct Configuration: Sendable {
         self.vaultPath = vaultPath
         self.vaultFolder = vaultFolder
         self.filenameFormat = filenameFormat
+        self.framesEnabled = framesEnabled
+        self.frameConfig = frameConfig
+        self.attachmentsFolder = attachmentsFolder
+        self.imageSyntax = imageSyntax
     }
 
-    /// Resolves the final output path. If `outputPath` was explicitly set, use it.
-    /// Otherwise, build from vault + folder + filename format + metadata.
+    /// Resolves the final output path.
     public func resolvedOutputPath(for metadata: VideoMetadata) -> String {
-        // If user gave an explicit --output, use it as-is
         if !outputPath.isEmpty {
             return outputPath
         }
 
-        // Build from vault config
         guard let vault = vaultPath else {
             return outputPath
         }
@@ -72,6 +86,21 @@ public struct Configuration: Sendable {
         return components.joined(separator: "/")
     }
 
+    /// Resolves the attachments directory for frames.
+    public func resolvedAttachmentsDir(for metadata: VideoMetadata) -> String? {
+        guard let vault = vaultPath else { return nil }
+        let expandedVault = NSString(string: vault).expandingTildeInPath
+        let slug = SlugGenerator.generate(from: metadata.title)
+        return "\(expandedVault)/\(attachmentsFolder)/\(slug)"
+    }
+
+    /// Returns the relative path from the markdown file to an attachment.
+    public func relativeAttachmentPath(for metadata: VideoMetadata, filename: String) -> String {
+        let slug = SlugGenerator.generate(from: metadata.title)
+        // Relative from YouTube/ folder to YouTube/attachments/slug/
+        return "attachments/\(slug)/\(filename)"
+    }
+
     private func currentDateString() -> String {
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy-MM-dd"
@@ -83,6 +112,7 @@ public struct Configuration: Sendable {
         url: String,
         cliOutput: String?,
         cliCookies: String?,
+        cliFrames: Bool = false,
         configFile: ConfigFile?
     ) -> Configuration {
         let cfg = configFile
@@ -96,6 +126,16 @@ public struct Configuration: Sendable {
         let vaultFolder = cfg?.obsidian?.folder ?? "YouTube"
         let filenameFormat = cfg?.obsidian?.filename_format ?? "{date}-{slug}"
         let cookies = cliCookies ?? cfg?.cookies_from_browser
+        let attachmentsFolder = cfg?.obsidian?.attachments ?? "YouTube/attachments"
+        let imageSyntaxStr = cfg?.obsidian?.image_syntax ?? "markdown"
+        let imageSyntax = ImageSyntax(rawValue: imageSyntaxStr) ?? .markdown
+
+        let frameConfig = FrameConfig(
+            maxFrames: cfg?.frames?.max_frames ?? 20,
+            intervalSeconds: cfg?.frames?.interval_seconds ?? 60,
+            sceneDetection: cfg?.frames?.scene_detection ?? true,
+            sceneThreshold: cfg?.frames?.scene_threshold ?? 0.4
+        )
 
         return Configuration(
             url: url,
@@ -108,7 +148,11 @@ public struct Configuration: Sendable {
             autoTag: autoTag,
             vaultPath: vaultPath,
             vaultFolder: vaultFolder,
-            filenameFormat: filenameFormat
+            filenameFormat: filenameFormat,
+            framesEnabled: cliFrames,
+            frameConfig: frameConfig,
+            attachmentsFolder: attachmentsFolder,
+            imageSyntax: imageSyntax
         )
     }
 }

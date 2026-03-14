@@ -8,16 +8,6 @@ public struct Summarizer: Summarizing {
     }
 
     public func summarize(transcript: Transcript, metadata: VideoMetadata, prompt: String) async throws -> Summary {
-        let renderedPrompt = PromptLoader.render(
-            template: prompt,
-            title: metadata.title,
-            channel: metadata.channel,
-            duration: metadata.durationString,
-            transcript: transcript.fullText,
-            frames: "",
-            language: "en"
-        )
-
-        return try await provider.complete(prompt: renderedPrompt)
+        return try await provider.complete(prompt: prompt)
     }
 }
