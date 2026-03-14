@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git:*)",
+      "Bash(swift:*)",
+      "Bash(tree:*)",
+      "Bash(yt-dlp:*)",
+      "WebFetch"
+    ]
+  }
+}
