@@ -16,6 +16,11 @@ public struct Configuration: Sendable {
     public let frameConfig: FrameConfig
     public let attachmentsFolder: String
     public let imageSyntax: ImageSyntax
+    public let transcriptionMethod: TranscriptionMethod
+    public let whisperEngine: WhisperEngine
+    public let whisperModel: String
+    public let transcriptionLanguage: String
+    public let openAIAPIKeyEnvVar: String
 
     public enum ImageSyntax: String, Sendable {
         case markdown
@@ -41,7 +46,12 @@ public struct Configuration: Sendable {
         framesEnabled: Bool = false,
         frameConfig: FrameConfig = FrameConfig(),
         attachmentsFolder: String = "YouTube/attachments",
-        imageSyntax: ImageSyntax = .markdown
+        imageSyntax: ImageSyntax = .markdown,
+        transcriptionMethod: TranscriptionMethod = .captions,
+        whisperEngine: WhisperEngine = .mlxWhisper,
+        whisperModel: String = "base",
+        transcriptionLanguage: String = "en",
+        openAIAPIKeyEnvVar: String = "OPENAI_API_KEY"
     ) {
         self.url = url
         self.outputPath = outputPath
@@ -58,6 +68,11 @@ public struct Configuration: Sendable {
         self.frameConfig = frameConfig
         self.attachmentsFolder = attachmentsFolder
         self.imageSyntax = imageSyntax
+        self.transcriptionMethod = transcriptionMethod
+        self.whisperEngine = whisperEngine
+        self.whisperModel = whisperModel
+        self.transcriptionLanguage = transcriptionLanguage
+        self.openAIAPIKeyEnvVar = openAIAPIKeyEnvVar
     }
 
     /// Resolves the final output path.
@@ -113,6 +128,7 @@ public struct Configuration: Sendable {
         cliOutput: String?,
         cliCookies: String?,
         cliFrames: Bool = false,
+        cliTranscription: String? = nil,
         configFile: ConfigFile?
     ) -> Configuration {
         let cfg = configFile
@@ -137,6 +153,15 @@ public struct Configuration: Sendable {
             sceneThreshold: cfg?.frames?.scene_threshold ?? 0.4
         )
 
+        // Transcription: CLI overrides config
+        let transcriptionStr = cliTranscription ?? cfg?.transcription?.prefer ?? "captions"
+        let transcriptionMethod = TranscriptionMethod(rawValue: transcriptionStr) ?? .captions
+        let whisperEngineStr = cfg?.transcription?.local_engine ?? "mlx-whisper"
+        let whisperEngine = WhisperEngine(rawValue: whisperEngineStr) ?? .mlxWhisper
+        let whisperModel = cfg?.transcription?.model ?? "base"
+        let transcriptionLanguage = cfg?.transcription?.language ?? "en"
+        let openAIAPIKeyEnvVar = cfg?.transcription?.openai_api_key_env ?? "OPENAI_API_KEY"
+
         return Configuration(
             url: url,
             outputPath: cliOutput ?? "",
@@ -152,7 +177,12 @@ public struct Configuration: Sendable {
             framesEnabled: cliFrames,
             frameConfig: frameConfig,
             attachmentsFolder: attachmentsFolder,
-            imageSyntax: imageSyntax
+            imageSyntax: imageSyntax,
+            transcriptionMethod: transcriptionMethod,
+            whisperEngine: whisperEngine,
+            whisperModel: whisperModel,
+            transcriptionLanguage: transcriptionLanguage,
+            openAIAPIKeyEnvVar: openAIAPIKeyEnvVar
         )
     }
 }

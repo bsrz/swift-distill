@@ -7,6 +7,7 @@ public struct ConfigFile: Codable, Sendable {
     public var tags: TagsConfig?
     public var summarization: SummarizationConfig?
     public var frames: FramesConfig?
+    public var transcription: TranscriptionConfig?
     public var cookies_from_browser: String?
 
     public init(
@@ -14,12 +15,14 @@ public struct ConfigFile: Codable, Sendable {
         tags: TagsConfig? = nil,
         summarization: SummarizationConfig? = nil,
         frames: FramesConfig? = nil,
+        transcription: TranscriptionConfig? = nil,
         cookies_from_browser: String? = nil
     ) {
         self.obsidian = obsidian
         self.tags = tags
         self.summarization = summarization
         self.frames = frames
+        self.transcription = transcription
         self.cookies_from_browser = cookies_from_browser
     }
 
@@ -74,6 +77,28 @@ public struct ConfigFile: Codable, Sendable {
             self.interval_seconds = interval_seconds
             self.scene_detection = scene_detection
             self.scene_threshold = scene_threshold
+        }
+    }
+
+    public struct TranscriptionConfig: Codable, Sendable {
+        public var prefer: String?
+        public var local_engine: String?
+        public var model: String?
+        public var language: String?
+        public var openai_api_key_env: String?
+
+        public init(
+            prefer: String? = nil,
+            local_engine: String? = nil,
+            model: String? = nil,
+            language: String? = nil,
+            openai_api_key_env: String? = nil
+        ) {
+            self.prefer = prefer
+            self.local_engine = local_engine
+            self.model = model
+            self.language = language
+            self.openai_api_key_env = openai_api_key_env
         }
     }
 }

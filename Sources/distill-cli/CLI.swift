@@ -35,6 +35,9 @@ struct Distill: AsyncParsableCommand {
     @Flag(name: .long, help: "Extract key frames from the video (requires ffmpeg).")
     var frames: Bool = false
 
+    @Option(name: .long, help: "Transcription method: captions, local, cloud (default: captions).")
+    var transcription: String?
+
     mutating func run() async throws {
         // Load config file
         let configFile: ConfigFile?
@@ -51,6 +54,7 @@ struct Distill: AsyncParsableCommand {
             cliOutput: output,
             cliCookies: cookiesFromBrowser,
             cliFrames: frames,
+            cliTranscription: transcription,
             configFile: configFile
         )
 
@@ -70,9 +74,30 @@ struct Distill: AsyncParsableCommand {
             ? FrameExtractor(config: cfg.frameConfig, cookiesFromBrowser: cfg.cookiesFromBrowser)
             : nil
 
+        // Build whisper transcribers based on config
+        let whisperTranscriber: WhisperTranscriber? = (cfg.transcriptionMethod == .local || cfg.transcriptionMethod == .captions)
+            ? WhisperTranscriber(engine: cfg.whisperEngine, model: cfg.whisperModel, language: cfg.transcriptionLanguage)
+            : nil
+
+        let cloudTranscriber: WhisperCloudTranscriber?
+        if cfg.transcriptionMethod == .cloud {
+            guard let openAIKey = ProcessInfo.processInfo.environment[cfg.openAIAPIKeyEnvVar], !openAIKey.isEmpty else {
+                printError(DistillError.configurationError("Cloud transcription requires \(cfg.openAIAPIKeyEnvVar) to be set."))
+                throw ExitCode(3)
+            }
+            cloudTranscriber = WhisperCloudTranscriber(apiKey: openAIKey, language: cfg.transcriptionLanguage)
+        } else {
+            cloudTranscriber = nil
+        }
+
         let pipeline = Pipeline(
             metadataResolver: MetadataResolver(cookiesFromBrowser: cfg.cookiesFromBrowser),
-            transcriptAcquirer: TranscriptAcquirer(cookiesFromBrowser: cfg.cookiesFromBrowser),
+            transcriptAcquirer: TranscriptAcquirer(
+                cookiesFromBrowser: cfg.cookiesFromBrowser,
+                transcriptionMethod: cfg.transcriptionMethod,
+                whisperTranscriber: whisperTranscriber,
+                cloudTranscriber: cloudTranscriber
+            ),
             summarizer: Summarizer(provider: provider),
             outputWriter: OutputWriter(),
             tagGenerator: tagGenerator,

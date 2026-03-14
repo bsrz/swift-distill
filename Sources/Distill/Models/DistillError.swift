@@ -48,7 +48,7 @@ public enum DistillError: LocalizedError {
         case .metadataFailed:
             return "Check that the URL is correct and yt-dlp is installed."
         case .transcriptNotAvailable:
-            return "This video has no captions. Whisper transcription is not yet supported."
+            return "This video has no captions. Try --transcription local (requires mlx-whisper or whisper.cpp) or --transcription cloud (requires OPENAI_API_KEY)."
         case .transcriptExtractionFailed:
             return "Try again or check that yt-dlp is up to date."
         case .summarizationFailed:
@@ -74,6 +74,15 @@ public enum DistillError: LocalizedError {
             return 3
         default:
             return 1
+        }
+    }
+
+    public var isCaptionUnavailable: Bool {
+        switch self {
+        case .transcriptNotAvailable:
+            return true
+        default:
+            return false
         }
     }
 

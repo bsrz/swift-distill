@@ -15,6 +15,19 @@ public struct TranscriptSegment: Sendable {
 public enum TranscriptSource: String, Sendable {
     case youtubeManual
     case youtubeAuto
+    case whisperLocal
+    case whisperCloud
+}
+
+public enum TranscriptionMethod: String, Sendable {
+    case captions
+    case local
+    case cloud
+}
+
+public enum WhisperEngine: String, Sendable {
+    case mlxWhisper = "mlx-whisper"
+    case whisperCpp = "whisper.cpp"
 }
 
 public struct Transcript: Sendable {

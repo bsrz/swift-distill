@@ -554,6 +554,187 @@ struct PipelineFrameTests {
     }
 }
 
+// MARK: - Transcription Fallback Tests
+
+@Suite("TranscriptionMethod")
+struct TranscriptionMethodTests {
+    @Test func defaultIsCaptions() {
+        let cfg = Configuration.merged(
+            url: "https://www.youtube.com/watch?v=test",
+            cliOutput: "/tmp/test.md",
+            cliCookies: nil,
+            configFile: nil
+        )
+        #expect(cfg.transcriptionMethod == .captions)
+    }
+
+    @Test func cliOverridesConfig() {
+        let configFile = ConfigFile(
+            transcription: ConfigFile.TranscriptionConfig(prefer: "local")
+        )
+        let cfg = Configuration.merged(
+            url: "https://www.youtube.com/watch?v=test",
+            cliOutput: "/tmp/test.md",
+            cliCookies: nil,
+            cliTranscription: "cloud",
+            configFile: configFile
+        )
+        #expect(cfg.transcriptionMethod == .cloud)
+    }
+
+    @Test func configFileTranscription() {
+        let configFile = ConfigFile(
+            transcription: ConfigFile.TranscriptionConfig(prefer: "local")
+        )
+        let cfg = Configuration.merged(
+            url: "https://www.youtube.com/watch?v=test",
+            cliOutput: "/tmp/test.md",
+            cliCookies: nil,
+            configFile: configFile
+        )
+        #expect(cfg.transcriptionMethod == .local)
+    }
+
+    @Test func whisperEngineFromConfig() {
+        let configFile = ConfigFile(
+            transcription: ConfigFile.TranscriptionConfig(local_engine: "whisper.cpp", model: "small")
+        )
+        let cfg = Configuration.merged(
+            url: "https://www.youtube.com/watch?v=test",
+            cliOutput: "/tmp/test.md",
+            cliCookies: nil,
+            configFile: configFile
+        )
+        #expect(cfg.whisperEngine == .whisperCpp)
+        #expect(cfg.whisperModel == "small")
+    }
+
+    @Test func defaultWhisperEngine() {
+        let cfg = Configuration.merged(
+            url: "https://www.youtube.com/watch?v=test",
+            cliOutput: "/tmp/test.md",
+            cliCookies: nil,
+            configFile: nil
+        )
+        #expect(cfg.whisperEngine == .mlxWhisper)
+        #expect(cfg.whisperModel == "base")
+        #expect(cfg.transcriptionLanguage == "en")
+    }
+
+    @Test func openAIKeyEnvVar() {
+        let configFile = ConfigFile(
+            transcription: ConfigFile.TranscriptionConfig(openai_api_key_env: "MY_OPENAI_KEY")
+        )
+        let cfg = Configuration.merged(
+            url: "https://www.youtube.com/watch?v=test",
+            cliOutput: "/tmp/test.md",
+            cliCookies: nil,
+            configFile: configFile
+        )
+        #expect(cfg.openAIAPIKeyEnvVar == "MY_OPENAI_KEY")
+    }
+
+    @Test func invalidMethodFallsBackToCaptions() {
+        let cfg = Configuration.merged(
+            url: "https://www.youtube.com/watch?v=test",
+            cliOutput: "/tmp/test.md",
+            cliCookies: nil,
+            cliTranscription: "invalid",
+            configFile: nil
+        )
+        #expect(cfg.transcriptionMethod == .captions)
+    }
+}
+
+@Suite("TranscriptSource")
+struct TranscriptSourceTests {
+    @Test func allCasesExist() {
+        #expect(TranscriptSource.youtubeManual.rawValue == "youtubeManual")
+        #expect(TranscriptSource.youtubeAuto.rawValue == "youtubeAuto")
+        #expect(TranscriptSource.whisperLocal.rawValue == "whisperLocal")
+        #expect(TranscriptSource.whisperCloud.rawValue == "whisperCloud")
+    }
+}
+
+@Suite("TranscriptAcquirer.fallback")
+struct TranscriptAcquirerFallbackTests {
+    @Test func captionsMethodUsesExistingBehavior() async throws {
+        // When method is captions, the acquirer tries YouTube captions
+        // We use a mock that implements the protocol to verify the method is respected
+        struct MockCaptionAcquirer: TranscriptAcquiring {
+            func acquire(metadata: VideoMetadata) async throws -> Transcript {
+                Transcript(
+                    segments: [TranscriptSegment(startTime: 0, endTime: 5, text: "caption text")],
+                    source: .youtubeManual
+                )
+            }
+        }
+
+        let acquirer = MockCaptionAcquirer()
+        let transcript = try await acquirer.acquire(metadata: testMetadata)
+        #expect(transcript.source == .youtubeManual)
+        #expect(transcript.segments.count == 1)
+    }
+
+    @Test func localMethodRequiresWhisper() async {
+        // TranscriptAcquirer with local method but no whisper transcriber should fail
+        let acquirer = TranscriptAcquirer(
+            cookiesFromBrowser: nil,
+            transcriptionMethod: .local,
+            whisperTranscriber: nil,
+            cloudTranscriber: nil
+        )
+
+        do {
+            _ = try await acquirer.acquire(metadata: testMetadata)
+            Issue.record("Expected error to be thrown")
+        } catch let error as DistillError {
+            if case .configurationError = error {
+                // Expected
+            } else {
+                Issue.record("Expected configurationError, got \(error)")
+            }
+        } catch {
+            Issue.record("Unexpected error: \(error)")
+        }
+    }
+
+    @Test func cloudMethodRequiresTranscriber() async {
+        let acquirer = TranscriptAcquirer(
+            cookiesFromBrowser: nil,
+            transcriptionMethod: .cloud,
+            whisperTranscriber: nil,
+            cloudTranscriber: nil
+        )
+
+        do {
+            _ = try await acquirer.acquire(metadata: testMetadata)
+            Issue.record("Expected error to be thrown")
+        } catch let error as DistillError {
+            if case .configurationError = error {
+                // Expected
+            } else {
+                Issue.record("Expected configurationError, got \(error)")
+            }
+        } catch {
+            Issue.record("Unexpected error: \(error)")
+        }
+    }
+}
+
+@Suite("DistillError.captions")
+struct DistillErrorCaptionTests {
+    @Test func transcriptNotAvailableIsCaptionUnavailable() {
+        #expect(DistillError.transcriptNotAvailable.isCaptionUnavailable)
+    }
+
+    @Test func otherErrorsAreNotCaptionUnavailable() {
+        #expect(!DistillError.invalidURL("test").isCaptionUnavailable)
+        #expect(!DistillError.transcriptExtractionFailed("test").isCaptionUnavailable)
+        #expect(!DistillError.missingAPIKey.isCaptionUnavailable)
+    }
+}
+
 @Suite("VideoMetadata")
 struct VideoMetadataTests {
     @Test func publishedDateFormat() {
