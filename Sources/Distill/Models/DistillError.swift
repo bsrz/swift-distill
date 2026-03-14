@@ -11,6 +11,7 @@ public enum DistillError: LocalizedError {
     case apiError(statusCode: Int, message: String)
     case outputWriteFailed(String)
     case configurationError(String)
+    case batchPartialFailure(succeeded: Int, failed: Int)
 
     public var errorDescription: String? {
         switch self {
@@ -34,6 +35,8 @@ public enum DistillError: LocalizedError {
             return "Failed to write output: \(reason)"
         case .configurationError(let reason):
             return "Configuration error: \(reason)"
+        case .batchPartialFailure(let succeeded, let failed):
+            return "Batch completed with partial failures: \(succeeded) succeeded, \(failed) failed."
         }
     }
 
@@ -65,6 +68,8 @@ public enum DistillError: LocalizedError {
             return "Check that the output directory exists and is writable."
         case .configurationError:
             return "Check your configuration."
+        case .batchPartialFailure:
+            return "Some videos failed. Check the status table above for details."
         }
     }
 
@@ -72,9 +77,20 @@ public enum DistillError: LocalizedError {
         switch self {
         case .configurationError, .missingAPIKey:
             return 3
+        case .batchPartialFailure:
+            return 2
         default:
             return 1
         }
+    }
+
+    /// Determines the exit code for a batch of video results.
+    public static func batchExitCode(results: [VideoResult]) -> Int32 {
+        let succeeded = results.filter(\.isSuccess).count
+        let failed = results.count - succeeded
+        if failed == 0 { return 0 }
+        if succeeded == 0 { return 1 }
+        return 2 // partial failure
     }
 
     public var isCaptionUnavailable: Bool {

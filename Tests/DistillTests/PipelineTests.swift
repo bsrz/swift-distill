@@ -735,6 +735,285 @@ struct DistillErrorCaptionTests {
     }
 }
 
+// MARK: - Batch & Playlist Tests
+
+@Suite("BatchRunner")
+struct BatchRunnerTests {
+    @Test func sequentialProcessing() async throws {
+        nonisolated(unsafe) var processedURLs: [String] = []
+        let lock = NSLock()
+
+        let factory = PipelineFactory { url in
+            lock.lock()
+            processedURLs.append(url)
+            lock.unlock()
+
+            let cfg = Configuration(
+                url: url,
+                outputPath: FileManager.default.temporaryDirectory
+                    .appendingPathComponent("batch-\(UUID()).md").path,
+                apiKeyEnvVar: "TEST_API_KEY_BATCH"
+            )
+            return Pipeline(
+                metadataResolver: MockMetadataResolver(metadata: testMetadata),
+                transcriptAcquirer: MockTranscriptAcquirer(transcript: testTranscript),
+                summarizer: MockSummarizer(summary: testSummary),
+                outputWriter: MockOutputWriter { _, _, _, _ in },
+                configuration: cfg
+            )
+        }
+
+        setenv("TEST_API_KEY_BATCH", "test-key", 1)
+        defer { unsetenv("TEST_API_KEY_BATCH") }
+
+        let runner = BatchRunner(pipelineFactory: factory, concurrency: 1, baseDelay: 0)
+        let urls = [
+            "https://www.youtube.com/watch?v=aaaaaaaaaaa",
+            "https://www.youtube.com/watch?v=bbbbbbbbbbb",
+        ]
+        let results = try await runner.run(urls: urls)
+
+        #expect(results.count == 2)
+        #expect(results[0].isSuccess)
+        #expect(results[1].isSuccess)
+    }
+
+    @Test func failFastStopsOnError() async throws {
+        nonisolated(unsafe) var callCount = 0
+        let lock = NSLock()
+
+        let factory = PipelineFactory { url in
+            lock.lock()
+            callCount += 1
+            let count = callCount
+            lock.unlock()
+
+            let cfg = Configuration(
+                url: url,
+                outputPath: FileManager.default.temporaryDirectory
+                    .appendingPathComponent("batch-ff-\(UUID()).md").path,
+                apiKeyEnvVar: "TEST_API_KEY_FAILFAST"
+            )
+
+            if count == 2 {
+                // Second URL fails at metadata resolution
+                return Pipeline(
+                    metadataResolver: FailingMetadataResolver(),
+                    transcriptAcquirer: MockTranscriptAcquirer(transcript: testTranscript),
+                    summarizer: MockSummarizer(summary: testSummary),
+                    outputWriter: MockOutputWriter { _, _, _, _ in },
+                    configuration: cfg
+                )
+            }
+
+            return Pipeline(
+                metadataResolver: MockMetadataResolver(metadata: testMetadata),
+                transcriptAcquirer: MockTranscriptAcquirer(transcript: testTranscript),
+                summarizer: MockSummarizer(summary: testSummary),
+                outputWriter: MockOutputWriter { _, _, _, _ in },
+                configuration: cfg
+            )
+        }
+
+        setenv("TEST_API_KEY_FAILFAST", "test-key", 1)
+        defer { unsetenv("TEST_API_KEY_FAILFAST") }
+
+        let runner = BatchRunner(pipelineFactory: factory, concurrency: 1, failFast: true, baseDelay: 0)
+        let urls = [
+            "https://www.youtube.com/watch?v=aaaaaaaaaaa",
+            "https://www.youtube.com/watch?v=bbbbbbbbbbb",
+            "https://www.youtube.com/watch?v=ccccccccccc",
+        ]
+        let results = try await runner.run(urls: urls)
+
+        // Should stop after second URL fails
+        #expect(results.count == 2)
+        #expect(results[0].isSuccess)
+        #expect(!results[1].isSuccess)
+    }
+
+    @Test func continuesOnErrorWithoutFailFast() async throws {
+        nonisolated(unsafe) var callCount = 0
+        let lock = NSLock()
+
+        let factory = PipelineFactory { url in
+            lock.lock()
+            callCount += 1
+            let count = callCount
+            lock.unlock()
+
+            let cfg = Configuration(
+                url: url,
+                outputPath: FileManager.default.temporaryDirectory
+                    .appendingPathComponent("batch-noff-\(UUID()).md").path,
+                apiKeyEnvVar: "TEST_API_KEY_NOFF"
+            )
+
+            if count == 2 {
+                return Pipeline(
+                    metadataResolver: FailingMetadataResolver(),
+                    transcriptAcquirer: MockTranscriptAcquirer(transcript: testTranscript),
+                    summarizer: MockSummarizer(summary: testSummary),
+                    outputWriter: MockOutputWriter { _, _, _, _ in },
+                    configuration: cfg
+                )
+            }
+
+            return Pipeline(
+                metadataResolver: MockMetadataResolver(metadata: testMetadata),
+                transcriptAcquirer: MockTranscriptAcquirer(transcript: testTranscript),
+                summarizer: MockSummarizer(summary: testSummary),
+                outputWriter: MockOutputWriter { _, _, _, _ in },
+                configuration: cfg
+            )
+        }
+
+        setenv("TEST_API_KEY_NOFF", "test-key", 1)
+        defer { unsetenv("TEST_API_KEY_NOFF") }
+
+        let runner = BatchRunner(pipelineFactory: factory, concurrency: 1, failFast: false, baseDelay: 0)
+        let urls = [
+            "https://www.youtube.com/watch?v=aaaaaaaaaaa",
+            "https://www.youtube.com/watch?v=bbbbbbbbbbb",
+            "https://www.youtube.com/watch?v=ccccccccccc",
+        ]
+        let results = try await runner.run(urls: urls)
+
+        // Should process all 3 URLs
+        #expect(results.count == 3)
+        #expect(results[0].isSuccess)
+        #expect(!results[1].isSuccess)
+        #expect(results[2].isSuccess)
+    }
+}
+
+@Suite("VideoResult")
+struct VideoResultTests {
+    @Test func successResult() {
+        let result = VideoResult.success(PipelineResult(
+            title: "Test Video",
+            durationString: "5:00",
+            outputPath: "/tmp/test.md",
+            inputTokens: 100,
+            outputTokens: 50,
+            costEstimate: 0.001
+        ))
+        #expect(result.isSuccess)
+        #expect(result.title == "Test Video (5:00)")
+        #expect(result.cost == 0.001)
+    }
+
+    @Test func failureResult() {
+        let result = VideoResult.failure(url: "https://youtube.com/watch?v=xyz", error: "Private video")
+        #expect(!result.isSuccess)
+        #expect(result.title == "https://youtube.com/watch?v=xyz")
+        #expect(result.statusString == "Private video")
+        #expect(result.cost == 0)
+    }
+}
+
+@Suite("DistillError.batch")
+struct DistillErrorBatchTests {
+    @Test func batchExitCodeAllSuccess() {
+        let results: [VideoResult] = [
+            .success(PipelineResult(title: "A", durationString: "1:00", outputPath: "/a", inputTokens: 0, outputTokens: 0, costEstimate: 0)),
+            .success(PipelineResult(title: "B", durationString: "2:00", outputPath: "/b", inputTokens: 0, outputTokens: 0, costEstimate: 0)),
+        ]
+        #expect(DistillError.batchExitCode(results: results) == 0)
+    }
+
+    @Test func batchExitCodeAllFailure() {
+        let results: [VideoResult] = [
+            .failure(url: "url1", error: "err"),
+            .failure(url: "url2", error: "err"),
+        ]
+        #expect(DistillError.batchExitCode(results: results) == 1)
+    }
+
+    @Test func batchExitCodePartialFailure() {
+        let results: [VideoResult] = [
+            .success(PipelineResult(title: "A", durationString: "1:00", outputPath: "/a", inputTokens: 0, outputTokens: 0, costEstimate: 0)),
+            .failure(url: "url2", error: "err"),
+        ]
+        #expect(DistillError.batchExitCode(results: results) == 2)
+    }
+
+    @Test func partialFailureExitCode() {
+        let error = DistillError.batchPartialFailure(succeeded: 3, failed: 1)
+        #expect(error.exitCode == 2)
+    }
+}
+
+@Suite("Configuration.withURL")
+struct ConfigurationWithURLTests {
+    @Test func withURLPreservesSettings() {
+        let cfg = Configuration(
+            url: "https://www.youtube.com/watch?v=original",
+            outputPath: "/original.md",
+            model: "claude-sonnet-4-6",
+            defaultTags: ["custom"],
+            autoTag: true,
+            vaultPath: "/vault",
+            vaultFolder: "YouTube"
+        )
+
+        let newCfg = cfg.withURL("https://www.youtube.com/watch?v=new")
+
+        #expect(newCfg.url == "https://www.youtube.com/watch?v=new")
+        #expect(newCfg.outputPath == "")
+        #expect(newCfg.model == "claude-sonnet-4-6")
+        #expect(newCfg.defaultTags == ["custom"])
+        #expect(newCfg.autoTag == true)
+        #expect(newCfg.vaultPath == "/vault")
+        #expect(newCfg.vaultFolder == "YouTube")
+    }
+
+    @Test func withURLOutputDirOverridesVault() {
+        let cfg = Configuration(
+            url: "https://www.youtube.com/watch?v=original",
+            outputPath: "",
+            vaultPath: "/vault",
+            vaultFolder: "YouTube"
+        )
+
+        let newCfg = cfg.withURL("https://www.youtube.com/watch?v=new", outputDir: "/custom/output")
+
+        #expect(newCfg.vaultPath == "/custom/output")
+        #expect(newCfg.vaultFolder == nil)
+    }
+}
+
+@Suite("PipelineResult")
+struct PipelineResultTests {
+    @Test func pipelineReturnsResult() async throws {
+        let outputPath = FileManager.default.temporaryDirectory
+            .appendingPathComponent("test-result-\(UUID()).md").path
+
+        let pipeline = Pipeline(
+            metadataResolver: MockMetadataResolver(metadata: testMetadata),
+            transcriptAcquirer: MockTranscriptAcquirer(transcript: testTranscript),
+            summarizer: MockSummarizer(summary: testSummary),
+            outputWriter: MockOutputWriter { _, _, _, _ in },
+            configuration: Configuration(
+                url: "https://www.youtube.com/watch?v=jNQXAC9IVRw",
+                outputPath: outputPath,
+                apiKeyEnvVar: "TEST_API_KEY_RESULT"
+            )
+        )
+
+        setenv("TEST_API_KEY_RESULT", "test-key", 1)
+        defer { unsetenv("TEST_API_KEY_RESULT") }
+
+        let result = try await pipeline.run()
+        #expect(result.title == "Me at the zoo")
+        #expect(result.durationString == "0:19")
+        #expect(result.outputPath == outputPath)
+        #expect(result.inputTokens == 100)
+        #expect(result.outputTokens == 50)
+        #expect(result.costEstimate > 0)
+    }
+}
+
 @Suite("VideoMetadata")
 struct VideoMetadataTests {
     @Test func publishedDateFormat() {

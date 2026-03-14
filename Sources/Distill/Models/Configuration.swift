@@ -116,6 +116,33 @@ public struct Configuration: Sendable {
         return "attachments/\(slug)/\(filename)"
     }
 
+    /// Creates a new Configuration with a different URL and optional output directory override.
+    /// Used for batch/playlist processing where each video gets its own config.
+    public func withURL(_ newURL: String, outputDir: String? = nil) -> Configuration {
+        return Configuration(
+            url: newURL,
+            outputPath: "",
+            apiKeyEnvVar: apiKeyEnvVar,
+            model: model,
+            maxTokens: maxTokens,
+            defaultTags: defaultTags,
+            cookiesFromBrowser: cookiesFromBrowser,
+            autoTag: autoTag,
+            vaultPath: outputDir ?? vaultPath,
+            vaultFolder: outputDir != nil ? nil : vaultFolder,
+            filenameFormat: filenameFormat,
+            framesEnabled: framesEnabled,
+            frameConfig: frameConfig,
+            attachmentsFolder: attachmentsFolder,
+            imageSyntax: imageSyntax,
+            transcriptionMethod: transcriptionMethod,
+            whisperEngine: whisperEngine,
+            whisperModel: whisperModel,
+            transcriptionLanguage: transcriptionLanguage,
+            openAIAPIKeyEnvVar: openAIAPIKeyEnvVar
+        )
+    }
+
     private func currentDateString() -> String {
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy-MM-dd"

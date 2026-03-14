@@ -27,7 +27,8 @@ public struct Pipeline: Sendable {
         self.configuration = configuration
     }
 
-    public func run() async throws {
+    @discardableResult
+    public func run() async throws -> PipelineResult {
         // 1. Validate URL
         let videoID = try URLValidator.validate(configuration.url)
         log("Video ID: \(videoID)")
@@ -139,6 +140,15 @@ public struct Pipeline: Sendable {
 
         // 10. Print output path to stdout
         print(outputPath)
+
+        return PipelineResult(
+            title: metadata.title,
+            durationString: metadata.durationString,
+            outputPath: outputPath,
+            inputTokens: summary.inputTokens,
+            outputTokens: summary.outputTokens,
+            costEstimate: costEstimate
+        )
     }
 
     // MARK: - Private

@@ -7,9 +7,25 @@ struct CLI: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "distill",
         abstract: "Distill the essence of any YouTube video into your Obsidian vault.",
-        subcommands: [Distill.self, Init.self, Setup.self],
+        subcommands: [Distill.self, Batch.self, Playlist.self, Init.self, Setup.self],
         defaultSubcommand: Distill.self
     )
+}
+
+// MARK: - Shared Options
+
+struct SharedOptions: ParsableArguments {
+    @Option(name: .long, help: "Browser to read cookies from for yt-dlp (e.g. brave, chrome, firefox).")
+    var cookiesFromBrowser: String?
+
+    @Option(name: .long, help: "Path to config file (default: ~/.distill/config.yaml).")
+    var config: String?
+
+    @Flag(name: .long, help: "Extract key frames from the video (requires ffmpeg).")
+    var frames: Bool = false
+
+    @Option(name: .long, help: "Transcription method: captions, local, cloud (default: captions).")
+    var transcription: String?
 }
 
 // MARK: - distill <url> (default subcommand)
@@ -26,35 +42,17 @@ struct Distill: AsyncParsableCommand {
     @Option(name: .long, help: "Output file path for the markdown summary.")
     var output: String?
 
-    @Option(name: .long, help: "Browser to read cookies from for yt-dlp (e.g. brave, chrome, firefox).")
-    var cookiesFromBrowser: String?
-
-    @Option(name: .long, help: "Path to config file (default: ~/.distill/config.yaml).")
-    var config: String?
-
-    @Flag(name: .long, help: "Extract key frames from the video (requires ffmpeg).")
-    var frames: Bool = false
-
-    @Option(name: .long, help: "Transcription method: captions, local, cloud (default: captions).")
-    var transcription: String?
+    @OptionGroup var shared: SharedOptions
 
     mutating func run() async throws {
-        // Load config file
-        let configFile: ConfigFile?
-        do {
-            configFile = try ConfigLoader.load(from: config)
-        } catch {
-            FileHandle.standardError.write(Data("Error: \(error.localizedDescription)\n".utf8))
-            throw ExitCode(3)
-        }
+        let configFile = try loadConfigFile(path: shared.config)
 
-        // Merge CLI > config > defaults
         let cfg = Configuration.merged(
             url: url,
             cliOutput: output,
-            cliCookies: cookiesFromBrowser,
-            cliFrames: frames,
-            cliTranscription: transcription,
+            cliCookies: shared.cookiesFromBrowser,
+            cliFrames: shared.frames,
+            cliTranscription: shared.transcription,
             configFile: configFile
         )
 
@@ -63,47 +61,7 @@ struct Distill: AsyncParsableCommand {
             throw ExitCode(DistillError.missingAPIKey.exitCode)
         }
 
-        let provider = ClaudeProvider(
-            apiKey: apiKey,
-            model: cfg.model,
-            maxTokens: cfg.maxTokens
-        )
-
-        let tagGenerator: TagGenerator? = cfg.autoTag ? TagGenerator(provider: provider) : nil
-        let frameExtractor: FrameExtractor? = cfg.framesEnabled
-            ? FrameExtractor(config: cfg.frameConfig, cookiesFromBrowser: cfg.cookiesFromBrowser)
-            : nil
-
-        // Build whisper transcribers based on config
-        let whisperTranscriber: WhisperTranscriber? = (cfg.transcriptionMethod == .local || cfg.transcriptionMethod == .captions)
-            ? WhisperTranscriber(engine: cfg.whisperEngine, model: cfg.whisperModel, language: cfg.transcriptionLanguage)
-            : nil
-
-        let cloudTranscriber: WhisperCloudTranscriber?
-        if cfg.transcriptionMethod == .cloud {
-            guard let openAIKey = ProcessInfo.processInfo.environment[cfg.openAIAPIKeyEnvVar], !openAIKey.isEmpty else {
-                printError(DistillError.configurationError("Cloud transcription requires \(cfg.openAIAPIKeyEnvVar) to be set."))
-                throw ExitCode(3)
-            }
-            cloudTranscriber = WhisperCloudTranscriber(apiKey: openAIKey, language: cfg.transcriptionLanguage)
-        } else {
-            cloudTranscriber = nil
-        }
-
-        let pipeline = Pipeline(
-            metadataResolver: MetadataResolver(cookiesFromBrowser: cfg.cookiesFromBrowser),
-            transcriptAcquirer: TranscriptAcquirer(
-                cookiesFromBrowser: cfg.cookiesFromBrowser,
-                transcriptionMethod: cfg.transcriptionMethod,
-                whisperTranscriber: whisperTranscriber,
-                cloudTranscriber: cloudTranscriber
-            ),
-            summarizer: Summarizer(provider: provider),
-            outputWriter: OutputWriter(),
-            tagGenerator: tagGenerator,
-            frameExtractor: frameExtractor,
-            configuration: cfg
-        )
+        let pipeline = try buildPipeline(url: url, cfg: cfg, apiKey: apiKey)
 
         do {
             try await pipeline.run()
@@ -112,11 +70,168 @@ struct Distill: AsyncParsableCommand {
             throw ExitCode(error.exitCode)
         }
     }
+}
 
-    private func printError(_ error: DistillError) {
-        FileHandle.standardError.write(Data("Error: \(error.errorDescription!)\n".utf8))
-        if let suggestion = error.suggestion {
-            FileHandle.standardError.write(Data("Suggestion: \(suggestion)\n".utf8))
+// MARK: - distill batch <file>
+
+struct Batch: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "batch",
+        abstract: "Process multiple YouTube URLs from a text file."
+    )
+
+    @Argument(help: "Path to a text file with one YouTube URL per line.")
+    var file: String
+
+    @Option(name: .long, help: "Output directory for markdown summaries.")
+    var output: String?
+
+    @Option(name: .long, help: "Number of videos to process in parallel (default: 1).")
+    var concurrency: Int = 1
+
+    @Flag(name: .long, help: "Stop processing on first error.")
+    var failFast: Bool = false
+
+    @OptionGroup var shared: SharedOptions
+
+    mutating func run() async throws {
+        let urls = try loadURLsFromFile(file)
+        guard !urls.isEmpty else {
+            printError(DistillError.configurationError("No URLs found in \(file)"))
+            throw ExitCode(3)
+        }
+
+        logStderr("Batch: \(urls.count) URLs, concurrency: \(concurrency)\n")
+
+        let configFile = try loadConfigFile(path: shared.config)
+        let baseCfg = Configuration.merged(
+            url: "",
+            cliOutput: nil,
+            cliCookies: shared.cookiesFromBrowser,
+            cliFrames: shared.frames,
+            cliTranscription: shared.transcription,
+            configFile: configFile
+        )
+
+        guard let apiKey = baseCfg.apiKey, !apiKey.isEmpty else {
+            printError(DistillError.missingAPIKey)
+            throw ExitCode(DistillError.missingAPIKey.exitCode)
+        }
+
+        let outputDir = output
+        let factory = PipelineFactory { url in
+            let cfg = baseCfg.withURL(url, outputDir: outputDir)
+            return try buildPipeline(url: url, cfg: cfg, apiKey: apiKey)
+        }
+
+        let runner = BatchRunner(
+            pipelineFactory: factory,
+            concurrency: concurrency,
+            failFast: failFast
+        )
+
+        let results = try await runner.run(urls: urls)
+        StatusTable.print(results: results, title: "Batch Results")
+
+        let exitCode = DistillError.batchExitCode(results: results)
+        if exitCode != 0 {
+            throw ExitCode(exitCode)
+        }
+    }
+}
+
+// MARK: - distill playlist <url>
+
+struct Playlist: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "playlist",
+        abstract: "Process all videos in a YouTube playlist."
+    )
+
+    @Argument(help: "YouTube playlist URL.")
+    var url: String
+
+    @Option(name: .long, help: "Output directory for markdown summaries.")
+    var output: String?
+
+    @Option(name: .long, help: "Number of videos to process in parallel (default: 1).")
+    var concurrency: Int = 1
+
+    @Flag(name: .long, help: "Stop processing on first error.")
+    var failFast: Bool = false
+
+    @OptionGroup var shared: SharedOptions
+
+    mutating func run() async throws {
+        let configFile = try loadConfigFile(path: shared.config)
+        let baseCfg = Configuration.merged(
+            url: "",
+            cliOutput: nil,
+            cliCookies: shared.cookiesFromBrowser,
+            cliFrames: shared.frames,
+            cliTranscription: shared.transcription,
+            configFile: configFile
+        )
+
+        guard let apiKey = baseCfg.apiKey, !apiKey.isEmpty else {
+            printError(DistillError.missingAPIKey)
+            throw ExitCode(DistillError.missingAPIKey.exitCode)
+        }
+
+        // Resolve playlist
+        logStderr("Resolving playlist...\n")
+        let resolver = PlaylistResolver(cookiesFromBrowser: baseCfg.cookiesFromBrowser)
+        let playlistInfo: PlaylistInfo
+        do {
+            playlistInfo = try await resolver.resolve(url: url)
+        } catch let error as DistillError {
+            printError(error)
+            throw ExitCode(error.exitCode)
+        }
+
+        logStderr("Playlist: \(playlistInfo.title) (\(playlistInfo.videoURLs.count) videos)\n")
+
+        let outputDir = output
+        let factory = PipelineFactory { url in
+            let cfg = baseCfg.withURL(url, outputDir: outputDir)
+            return try buildPipeline(url: url, cfg: cfg, apiKey: apiKey)
+        }
+
+        let runner = BatchRunner(
+            pipelineFactory: factory,
+            concurrency: concurrency,
+            failFast: failFast
+        )
+
+        let results = try await runner.run(urls: playlistInfo.videoURLs)
+        StatusTable.print(results: results, title: playlistInfo.title)
+
+        // Generate index note
+        let indexOutputDir: String
+        if let dir = outputDir {
+            indexOutputDir = dir
+        } else if let vault = baseCfg.vaultPath {
+            let expanded = NSString(string: vault).expandingTildeInPath
+            let folder = baseCfg.vaultFolder ?? "YouTube"
+            indexOutputDir = "\(expanded)/\(folder)"
+        } else {
+            indexOutputDir = FileManager.default.currentDirectoryPath
+        }
+
+        do {
+            try IndexNoteWriter().write(
+                playlistTitle: playlistInfo.title,
+                results: results,
+                to: indexOutputDir,
+                filenameFormat: baseCfg.filenameFormat
+            )
+        } catch {
+            logStderr("Warning: Failed to write index note: \(error.localizedDescription)\n")
+        }
+
+        let exitCode = DistillError.batchExitCode(results: results)
+        if exitCode != 0 {
+            throw ExitCode(exitCode)
         }
     }
 }
@@ -184,9 +299,9 @@ struct Setup: AsyncParsableCommand {
 
         // Check if key exists
         if let key = ProcessInfo.processInfo.environment[apiKeyEnv], !key.isEmpty {
-            print("  ✓ Found API key in \(apiKeyEnv)")
+            print("  Found API key in \(apiKeyEnv)")
         } else {
-            print("  ⚠ No value found in \(apiKeyEnv). Set it before running distill.")
+            print("  No value found in \(apiKeyEnv). Set it before running distill.")
         }
 
         // 4. Cookies
@@ -238,8 +353,81 @@ struct Setup: AsyncParsableCommand {
         let vaultFolder = URL(fileURLWithPath: expandedVault).appendingPathComponent(folder)
         try FileManager.default.createDirectory(at: vaultFolder, withIntermediateDirectories: true)
 
-        print("\n✓ Config written to \(configPath.path)")
-        print("✓ Created \(vaultFolder.path)")
+        print("\nConfig written to \(configPath.path)")
+        print("Created \(vaultFolder.path)")
         print("\nYou can now run: distill <youtube-url>")
     }
+}
+
+// MARK: - Helpers
+
+private func loadConfigFile(path: String?) throws -> ConfigFile? {
+    do {
+        return try ConfigLoader.load(from: path)
+    } catch {
+        FileHandle.standardError.write(Data("Error: \(error.localizedDescription)\n".utf8))
+        throw ExitCode(3)
+    }
+}
+
+private func buildPipeline(url: String, cfg: Configuration, apiKey: String) throws -> Pipeline {
+    let provider = ClaudeProvider(
+        apiKey: apiKey,
+        model: cfg.model,
+        maxTokens: cfg.maxTokens
+    )
+
+    let tagGenerator: TagGenerator? = cfg.autoTag ? TagGenerator(provider: provider) : nil
+    let frameExtractor: FrameExtractor? = cfg.framesEnabled
+        ? FrameExtractor(config: cfg.frameConfig, cookiesFromBrowser: cfg.cookiesFromBrowser)
+        : nil
+
+    let whisperTranscriber: WhisperTranscriber? = (cfg.transcriptionMethod == .local || cfg.transcriptionMethod == .captions)
+        ? WhisperTranscriber(engine: cfg.whisperEngine, model: cfg.whisperModel, language: cfg.transcriptionLanguage)
+        : nil
+
+    let cloudTranscriber: WhisperCloudTranscriber?
+    if cfg.transcriptionMethod == .cloud {
+        guard let openAIKey = ProcessInfo.processInfo.environment[cfg.openAIAPIKeyEnvVar], !openAIKey.isEmpty else {
+            throw DistillError.configurationError("Cloud transcription requires \(cfg.openAIAPIKeyEnvVar) to be set.")
+        }
+        cloudTranscriber = WhisperCloudTranscriber(apiKey: openAIKey, language: cfg.transcriptionLanguage)
+    } else {
+        cloudTranscriber = nil
+    }
+
+    return Pipeline(
+        metadataResolver: MetadataResolver(cookiesFromBrowser: cfg.cookiesFromBrowser),
+        transcriptAcquirer: TranscriptAcquirer(
+            cookiesFromBrowser: cfg.cookiesFromBrowser,
+            transcriptionMethod: cfg.transcriptionMethod,
+            whisperTranscriber: whisperTranscriber,
+            cloudTranscriber: cloudTranscriber
+        ),
+        summarizer: Summarizer(provider: provider),
+        outputWriter: OutputWriter(),
+        tagGenerator: tagGenerator,
+        frameExtractor: frameExtractor,
+        configuration: cfg
+    )
+}
+
+private func loadURLsFromFile(_ path: String) throws -> [String] {
+    let expandedPath = NSString(string: path).expandingTildeInPath
+    let content = try String(contentsOfFile: expandedPath, encoding: .utf8)
+    return content
+        .components(separatedBy: .newlines)
+        .map { $0.trimmingCharacters(in: .whitespaces) }
+        .filter { !$0.isEmpty && !$0.hasPrefix("#") }
+}
+
+func printError(_ error: DistillError) {
+    FileHandle.standardError.write(Data("Error: \(error.errorDescription!)\n".utf8))
+    if let suggestion = error.suggestion {
+        FileHandle.standardError.write(Data("Suggestion: \(suggestion)\n".utf8))
+    }
+}
+
+func logStderr(_ message: String) {
+    FileHandle.standardError.write(Data(message.utf8))
 }
