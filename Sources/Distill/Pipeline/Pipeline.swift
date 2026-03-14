@@ -5,6 +5,7 @@ public struct Pipeline: Sendable {
     private let transcriptAcquirer: any TranscriptAcquiring
     private let summarizer: any Summarizing
     private let outputWriter: any OutputWriting
+    private let tagGenerator: (any TagGenerating)?
     private let configuration: Configuration
 
     public init(
@@ -12,12 +13,14 @@ public struct Pipeline: Sendable {
         transcriptAcquirer: any TranscriptAcquiring,
         summarizer: any Summarizing,
         outputWriter: any OutputWriting,
+        tagGenerator: (any TagGenerating)? = nil,
         configuration: Configuration
     ) {
         self.metadataResolver = metadataResolver
         self.transcriptAcquirer = transcriptAcquirer
         self.summarizer = summarizer
         self.outputWriter = outputWriter
+        self.tagGenerator = tagGenerator
         self.configuration = configuration
     }
 
@@ -30,6 +33,7 @@ public struct Pipeline: Sendable {
         guard let apiKey = configuration.apiKey, !apiKey.isEmpty else {
             throw DistillError.missingAPIKey
         }
+        _ = apiKey // used for validation only; provider already has it
 
         // 3. Resolve metadata
         let metadataSpinner = Spinner(message: "Fetching video metadata...")
@@ -55,7 +59,22 @@ public struct Pipeline: Sendable {
             throw error
         }
 
-        // 5. Summarize
+        // 5. Generate tags (if enabled)
+        var tags = configuration.defaultTags
+        if configuration.autoTag, let tagGenerator {
+            let tagSpinner = Spinner(message: "Generating tags...")
+            await tagSpinner.start()
+            do {
+                let generatedTags = try await tagGenerator.generate(from: transcript, metadata: metadata)
+                tags += generatedTags
+                await tagSpinner.succeed("Generated \(generatedTags.count) tags")
+            } catch {
+                await tagSpinner.fail("Tag generation failed (continuing with default tags)")
+                // Non-fatal — continue with default tags
+            }
+        }
+
+        // 6. Summarize
         let summarySpinner = Spinner(message: "Summarizing with \(configuration.model)...")
         await summarySpinner.start()
         let summary: Summary
@@ -76,24 +95,32 @@ public struct Pipeline: Sendable {
         let costEstimate = Double(summary.inputTokens * 3 + summary.outputTokens * 15) / 1_000_000.0
         log("Tokens: \(summary.inputTokens) in / \(summary.outputTokens) out (~$\(String(format: "%.4f", costEstimate)))")
 
-        // 6. Write output
+        // 7. Resolve output path
+        let outputPath = configuration.resolvedOutputPath(for: metadata)
+        guard !outputPath.isEmpty else {
+            throw DistillError.configurationError(
+                "No output path. Use --output or configure obsidian.vault in ~/.distill/config.yaml"
+            )
+        }
+
+        // 8. Write output
         let writeSpinner = Spinner(message: "Writing output...")
         await writeSpinner.start()
         do {
             try outputWriter.write(
                 summary: summary,
                 metadata: metadata,
-                to: configuration.outputPath,
-                tags: configuration.defaultTags
+                to: outputPath,
+                tags: tags
             )
-            await writeSpinner.succeed("Written to \(configuration.outputPath)")
+            await writeSpinner.succeed("Written to \(outputPath)")
         } catch {
             await writeSpinner.fail("Failed to write output")
             throw error
         }
 
-        // 7. Print output path
-        print(configuration.outputPath)
+        // 9. Print output path to stdout
+        print(outputPath)
     }
 
     private func log(_ message: String) {

@@ -22,6 +22,9 @@ let package = Package(
         ),
         .target(
             name: "Distill",
+            dependencies: [
+                .product(name: "Yams", package: "Yams"),
+            ],
             resources: [
                 .process("Resources"),
             ]

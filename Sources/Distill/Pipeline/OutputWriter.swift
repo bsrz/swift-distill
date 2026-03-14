@@ -23,17 +23,27 @@ public struct OutputWriter: OutputWriting {
     }
 
     private func buildFrontmatter(metadata: VideoMetadata, tags: [String]) -> String {
-        let allTags = tags + metadata.tags.prefix(5)
-        let tagLine = allTags.map { "  - \($0)" }.joined(separator: "\n")
+        // Deduplicate tags preserving order
+        var seen = Set<String>()
+        let uniqueTags = tags.filter { seen.insert($0.lowercased()).inserted }
+        let tagLines = uniqueTags.map { "  - \($0)" }.joined(separator: "\n")
+
+        let today = {
+            let f = DateFormatter()
+            f.dateFormat = "yyyy-MM-dd"
+            return f.string(from: Date())
+        }()
 
         return """
         title: "\(escapeFrontmatter(metadata.title))"
+        source: \(metadata.webpageURL)
         channel: "\(escapeFrontmatter(metadata.channel))"
         published: \(metadata.publishedDate)
-        duration: \(metadata.durationString)
-        url: \(metadata.webpageURL)
+        summarized: \(today)
+        duration: "\(metadata.durationString)"
         tags:
-        \(tagLine)
+        \(tagLines)
+        type: youtube-summary
 
         """
     }
