@@ -6,8 +6,10 @@
       "Bash(git:*)",
       "Bash(swift:*)",
       "Bash(tree:*)",
+      "Bash(which:*)",
       "Bash(yt-dlp:*)",
-      "WebFetch"
+      "WebFetch",
+      "WebSearch"
     ]
   }
 }
