@@ -21,10 +21,35 @@ public struct Configuration: Sendable {
     public let whisperModel: String
     public let transcriptionLanguage: String
     public let openAIAPIKeyEnvVar: String
+    public let verbosity: Verbosity
+    public let dryRun: Bool
+    public let transcriptOnly: Bool
+    public let customPromptPath: String?
+    public let outputFormat: OutputFormat
+    public let overwrite: Bool
+    public let provider: LLMProvider
 
     public enum ImageSyntax: String, Sendable {
         case markdown
         case wikilink
+    }
+
+    public enum Verbosity: Sendable {
+        case normal
+        case quiet
+        case verbose
+    }
+
+    public enum OutputFormat: String, Sendable {
+        case markdown
+        case json
+        case yaml
+    }
+
+    public enum LLMProvider: String, Sendable {
+        case claude
+        case openai
+        case ollama
     }
 
     public var apiKey: String? {
@@ -51,7 +76,14 @@ public struct Configuration: Sendable {
         whisperEngine: WhisperEngine = .mlxWhisper,
         whisperModel: String = "base",
         transcriptionLanguage: String = "en",
-        openAIAPIKeyEnvVar: String = "OPENAI_API_KEY"
+        openAIAPIKeyEnvVar: String = "OPENAI_API_KEY",
+        verbosity: Verbosity = .normal,
+        dryRun: Bool = false,
+        transcriptOnly: Bool = false,
+        customPromptPath: String? = nil,
+        outputFormat: OutputFormat = .markdown,
+        overwrite: Bool = false,
+        provider: LLMProvider = .claude
     ) {
         self.url = url
         self.outputPath = outputPath
@@ -73,6 +105,13 @@ public struct Configuration: Sendable {
         self.whisperModel = whisperModel
         self.transcriptionLanguage = transcriptionLanguage
         self.openAIAPIKeyEnvVar = openAIAPIKeyEnvVar
+        self.verbosity = verbosity
+        self.dryRun = dryRun
+        self.transcriptOnly = transcriptOnly
+        self.customPromptPath = customPromptPath
+        self.outputFormat = outputFormat
+        self.overwrite = overwrite
+        self.provider = provider
     }
 
     /// Resolves the final output path.
@@ -139,7 +178,14 @@ public struct Configuration: Sendable {
             whisperEngine: whisperEngine,
             whisperModel: whisperModel,
             transcriptionLanguage: transcriptionLanguage,
-            openAIAPIKeyEnvVar: openAIAPIKeyEnvVar
+            openAIAPIKeyEnvVar: openAIAPIKeyEnvVar,
+            verbosity: verbosity,
+            dryRun: dryRun,
+            transcriptOnly: transcriptOnly,
+            customPromptPath: customPromptPath,
+            outputFormat: outputFormat,
+            overwrite: overwrite,
+            provider: provider
         )
     }
 
@@ -156,12 +202,31 @@ public struct Configuration: Sendable {
         cliCookies: String?,
         cliFrames: Bool = false,
         cliTranscription: String? = nil,
+        cliQuiet: Bool = false,
+        cliVerbose: Bool = false,
+        cliDryRun: Bool = false,
+        cliTranscriptOnly: Bool = false,
+        cliPrompt: String? = nil,
+        cliFormat: String? = nil,
+        cliOverwrite: Bool = false,
+        cliProvider: String? = nil,
+        cliModel: String? = nil,
         configFile: ConfigFile?
     ) -> Configuration {
         let cfg = configFile
 
+        let providerStr = cliProvider ?? cfg?.summarization?.provider ?? "claude"
+        let provider = LLMProvider(rawValue: providerStr) ?? .claude
+
+        let defaultModel: String
+        switch provider {
+        case .claude: defaultModel = "claude-sonnet-4-6"
+        case .openai: defaultModel = "gpt-4o"
+        case .ollama: defaultModel = "llama3.2"
+        }
+
         let apiKeyEnvVar = cfg?.summarization?.api_key_env ?? "ANTHROPIC_API_KEY"
-        let model = cfg?.summarization?.model ?? "claude-sonnet-4-6"
+        let model = cliModel ?? cfg?.summarization?.model ?? defaultModel
         let maxTokens = cfg?.summarization?.max_tokens ?? 8192
         let defaultTags = cfg?.tags?.default ?? ["youtube"]
         let autoTag = cfg?.tags?.auto_tag ?? false
@@ -189,6 +254,27 @@ public struct Configuration: Sendable {
         let transcriptionLanguage = cfg?.transcription?.language ?? "en"
         let openAIAPIKeyEnvVar = cfg?.transcription?.openai_api_key_env ?? "OPENAI_API_KEY"
 
+        // Verbosity: --quiet and --verbose are mutually exclusive; CLI wins
+        let verbosity: Verbosity
+        if cliQuiet { verbosity = .quiet }
+        else if cliVerbose { verbosity = .verbose }
+        else { verbosity = .normal }
+
+        // Output format: CLI --format overrides, or infer from file extension
+        let outputFormat: OutputFormat
+        if let fmt = cliFormat, let parsed = OutputFormat(rawValue: fmt) {
+            outputFormat = parsed
+        } else if let output = cliOutput, !output.isEmpty {
+            let ext = (output as NSString).pathExtension.lowercased()
+            switch ext {
+            case "json": outputFormat = .json
+            case "yaml", "yml": outputFormat = .yaml
+            default: outputFormat = .markdown
+            }
+        } else {
+            outputFormat = .markdown
+        }
+
         return Configuration(
             url: url,
             outputPath: cliOutput ?? "",
@@ -209,7 +295,14 @@ public struct Configuration: Sendable {
             whisperEngine: whisperEngine,
             whisperModel: whisperModel,
             transcriptionLanguage: transcriptionLanguage,
-            openAIAPIKeyEnvVar: openAIAPIKeyEnvVar
+            openAIAPIKeyEnvVar: openAIAPIKeyEnvVar,
+            verbosity: verbosity,
+            dryRun: cliDryRun,
+            transcriptOnly: cliTranscriptOnly,
+            customPromptPath: cliPrompt,
+            outputFormat: outputFormat,
+            overwrite: cliOverwrite,
+            provider: provider
         )
     }
 }

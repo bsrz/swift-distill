@@ -1,9 +1,9 @@
 import Foundation
 
 public struct TagGenerator: TagGenerating {
-    private let provider: ClaudeProvider
+    private let provider: any LLMProviding
 
-    public init(provider: ClaudeProvider) {
+    public init(provider: any LLMProviding) {
         self.provider = provider
     }
 

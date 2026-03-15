@@ -1046,3 +1046,321 @@ struct DistillErrorTests {
         #expect(!DistillError.invalidURL("").isTransient)
     }
 }
+
+// MARK: - M6 Tests
+
+@Suite("Configuration.m6")
+struct ConfigurationM6Tests {
+    @Test func mergedWithQuietFlag() {
+        let cfg = Configuration.merged(
+            url: "https://www.youtube.com/watch?v=jNQXAC9IVRw",
+            cliOutput: nil,
+            cliCookies: nil,
+            cliQuiet: true,
+            configFile: nil
+        )
+        #expect(cfg.verbosity == .quiet)
+    }
+
+    @Test func mergedWithVerboseFlag() {
+        let cfg = Configuration.merged(
+            url: "https://www.youtube.com/watch?v=jNQXAC9IVRw",
+            cliOutput: nil,
+            cliCookies: nil,
+            cliVerbose: true,
+            configFile: nil
+        )
+        #expect(cfg.verbosity == .verbose)
+    }
+
+    @Test func mergedDefaultVerbosity() {
+        let cfg = Configuration.merged(
+            url: "https://www.youtube.com/watch?v=jNQXAC9IVRw",
+            cliOutput: nil,
+            cliCookies: nil,
+            configFile: nil
+        )
+        #expect(cfg.verbosity == .normal)
+    }
+
+    @Test func mergedDryRunFlag() {
+        let cfg = Configuration.merged(
+            url: "https://www.youtube.com/watch?v=jNQXAC9IVRw",
+            cliOutput: nil,
+            cliCookies: nil,
+            cliDryRun: true,
+            configFile: nil
+        )
+        #expect(cfg.dryRun == true)
+    }
+
+    @Test func mergedTranscriptOnly() {
+        let cfg = Configuration.merged(
+            url: "https://www.youtube.com/watch?v=jNQXAC9IVRw",
+            cliOutput: nil,
+            cliCookies: nil,
+            cliTranscriptOnly: true,
+            configFile: nil
+        )
+        #expect(cfg.transcriptOnly == true)
+    }
+
+    @Test func mergedOverwrite() {
+        let cfg = Configuration.merged(
+            url: "https://www.youtube.com/watch?v=jNQXAC9IVRw",
+            cliOutput: nil,
+            cliCookies: nil,
+            cliOverwrite: true,
+            configFile: nil
+        )
+        #expect(cfg.overwrite == true)
+    }
+
+    @Test func mergedCustomPrompt() {
+        let cfg = Configuration.merged(
+            url: "https://www.youtube.com/watch?v=jNQXAC9IVRw",
+            cliOutput: nil,
+            cliCookies: nil,
+            cliPrompt: "/tmp/custom.md",
+            configFile: nil
+        )
+        #expect(cfg.customPromptPath == "/tmp/custom.md")
+    }
+
+    @Test func mergedFormatJSON() {
+        let cfg = Configuration.merged(
+            url: "https://www.youtube.com/watch?v=jNQXAC9IVRw",
+            cliOutput: nil,
+            cliCookies: nil,
+            cliFormat: "json",
+            configFile: nil
+        )
+        #expect(cfg.outputFormat == .json)
+    }
+
+    @Test func mergedFormatYAML() {
+        let cfg = Configuration.merged(
+            url: "https://www.youtube.com/watch?v=jNQXAC9IVRw",
+            cliOutput: nil,
+            cliCookies: nil,
+            cliFormat: "yaml",
+            configFile: nil
+        )
+        #expect(cfg.outputFormat == .yaml)
+    }
+
+    @Test func formatInferredFromExtension() {
+        let cfg = Configuration.merged(
+            url: "https://www.youtube.com/watch?v=jNQXAC9IVRw",
+            cliOutput: "/tmp/output.json",
+            cliCookies: nil,
+            configFile: nil
+        )
+        #expect(cfg.outputFormat == .json)
+    }
+
+    @Test func formatInferredYAML() {
+        let cfg = Configuration.merged(
+            url: "https://www.youtube.com/watch?v=jNQXAC9IVRw",
+            cliOutput: "/tmp/output.yaml",
+            cliCookies: nil,
+            configFile: nil
+        )
+        #expect(cfg.outputFormat == .yaml)
+    }
+
+    @Test func formatInferredYML() {
+        let cfg = Configuration.merged(
+            url: "https://www.youtube.com/watch?v=jNQXAC9IVRw",
+            cliOutput: "/tmp/output.yml",
+            cliCookies: nil,
+            configFile: nil
+        )
+        #expect(cfg.outputFormat == .yaml)
+    }
+
+    @Test func explicitFormatOverridesExtension() {
+        let cfg = Configuration.merged(
+            url: "https://www.youtube.com/watch?v=jNQXAC9IVRw",
+            cliOutput: "/tmp/output.json",
+            cliCookies: nil,
+            cliFormat: "yaml",
+            configFile: nil
+        )
+        #expect(cfg.outputFormat == .yaml)
+    }
+
+    @Test func mergedProviderOpenAI() {
+        let cfg = Configuration.merged(
+            url: "https://www.youtube.com/watch?v=jNQXAC9IVRw",
+            cliOutput: nil,
+            cliCookies: nil,
+            cliProvider: "openai",
+            configFile: nil
+        )
+        #expect(cfg.provider == .openai)
+        #expect(cfg.model == "gpt-4o") // default model for openai
+    }
+
+    @Test func mergedProviderOllama() {
+        let cfg = Configuration.merged(
+            url: "https://www.youtube.com/watch?v=jNQXAC9IVRw",
+            cliOutput: nil,
+            cliCookies: nil,
+            cliProvider: "ollama",
+            configFile: nil
+        )
+        #expect(cfg.provider == .ollama)
+        #expect(cfg.model == "llama3.2")
+    }
+
+    @Test func cliModelOverridesProviderDefault() {
+        let cfg = Configuration.merged(
+            url: "https://www.youtube.com/watch?v=jNQXAC9IVRw",
+            cliOutput: nil,
+            cliCookies: nil,
+            cliProvider: "openai",
+            cliModel: "gpt-4-turbo",
+            configFile: nil
+        )
+        #expect(cfg.provider == .openai)
+        #expect(cfg.model == "gpt-4-turbo")
+    }
+
+    @Test func providerFromConfigFile() {
+        let configFile = ConfigFile(
+            summarization: .init(provider: "openai", model: "gpt-4o-mini")
+        )
+        let cfg = Configuration.merged(
+            url: "https://www.youtube.com/watch?v=jNQXAC9IVRw",
+            cliOutput: nil,
+            cliCookies: nil,
+            configFile: configFile
+        )
+        #expect(cfg.provider == .openai)
+        #expect(cfg.model == "gpt-4o-mini")
+    }
+
+    @Test func withURLPreservesM6Fields() {
+        let cfg = Configuration(
+            url: "https://www.youtube.com/watch?v=original",
+            outputPath: "/original.md",
+            verbosity: .verbose,
+            dryRun: true,
+            transcriptOnly: false,
+            customPromptPath: "/custom.md",
+            outputFormat: .json,
+            overwrite: true,
+            provider: .openai
+        )
+
+        let newCfg = cfg.withURL("https://www.youtube.com/watch?v=new")
+
+        #expect(newCfg.verbosity == .verbose)
+        #expect(newCfg.dryRun == true)
+        #expect(newCfg.customPromptPath == "/custom.md")
+        #expect(newCfg.outputFormat == .json)
+        #expect(newCfg.overwrite == true)
+        #expect(newCfg.provider == .openai)
+    }
+}
+
+@Suite("Pipeline.dryRun")
+struct PipelineDryRunTests {
+    @Test func dryRunSkipsSummarization() async throws {
+        let outputPath = FileManager.default.temporaryDirectory
+            .appendingPathComponent("dryrun-\(UUID()).md").path
+
+        let pipeline = Pipeline(
+            metadataResolver: MockMetadataResolver(metadata: testMetadata),
+            transcriptAcquirer: MockTranscriptAcquirer(transcript: testTranscript),
+            summarizer: FailingSummarizer(), // Would fail if called
+            outputWriter: MockOutputWriter { _, _, _, _ in },
+            configuration: Configuration(
+                url: "https://www.youtube.com/watch?v=jNQXAC9IVRw",
+                outputPath: outputPath,
+                apiKeyEnvVar: "TEST_DRY_RUN_KEY",
+                dryRun: true
+            )
+        )
+
+        setenv("TEST_DRY_RUN_KEY", "test-key", 1)
+        defer { unsetenv("TEST_DRY_RUN_KEY") }
+
+        let result = try await pipeline.run()
+        #expect(result.outputTokens == 0) // No LLM call
+    }
+}
+
+@Suite("Pipeline.transcriptOnly")
+struct PipelineTranscriptOnlyTests {
+    @Test func transcriptOnlyReturnsEarlyWithoutAPIKey() async throws {
+        let pipeline = Pipeline(
+            metadataResolver: MockMetadataResolver(metadata: testMetadata),
+            transcriptAcquirer: MockTranscriptAcquirer(transcript: testTranscript),
+            summarizer: FailingSummarizer(),
+            outputWriter: MockOutputWriter { _, _, _, _ in },
+            configuration: Configuration(
+                url: "https://www.youtube.com/watch?v=jNQXAC9IVRw",
+                outputPath: "",
+                apiKeyEnvVar: "NONEXISTENT_KEY_FOR_TEST",
+                transcriptOnly: true
+            )
+        )
+
+        let result = try await pipeline.run()
+        #expect(result.inputTokens == 0)
+        #expect(result.outputTokens == 0)
+        #expect(result.outputPath == "")
+    }
+}
+
+@Suite("CacheManager")
+struct CacheManagerTests {
+    @Test func statusReturnsEmptyWhenNoCacheDir() {
+        let status = CacheManager.status()
+        // Either 0 entries or whatever is in cache — just verify it doesn't crash
+        #expect(status.entries >= 0)
+    }
+
+    @Test func formattedSizeBytes() {
+        let status = CacheStatus(entries: 0, totalBytes: 512)
+        #expect(status.formattedSize == "512 B")
+    }
+
+    @Test func formattedSizeKB() {
+        let status = CacheStatus(entries: 1, totalBytes: 2048)
+        #expect(status.formattedSize == "2.0 KB")
+    }
+
+    @Test func formattedSizeMB() {
+        let status = CacheStatus(entries: 5, totalBytes: 2_500_000)
+        #expect(status.formattedSize == "2.4 MB")
+    }
+}
+
+@Suite("DependencyChecker")
+struct DependencyCheckerTests {
+    @Test func checkDoesNotCrash() async {
+        // Just verify it runs without throwing
+        await DependencyChecker.check()
+    }
+}
+
+@Suite("LLMProvider")
+struct LLMProviderTests {
+    @Test func claudeProviderConformsToLLMProviding() {
+        let provider: any LLMProviding = ClaudeProvider(apiKey: "test", model: "test", maxTokens: 100)
+        #expect(provider is ClaudeProvider)
+    }
+
+    @Test func openAIProviderConformsToLLMProviding() {
+        let provider: any LLMProviding = OpenAIProvider(apiKey: "test", model: "test", maxTokens: 100)
+        #expect(provider is OpenAIProvider)
+    }
+
+    @Test func ollamaProviderConformsToLLMProviding() {
+        let provider: any LLMProviding = OllamaProvider(model: "test")
+        #expect(provider is OllamaProvider)
+    }
+}

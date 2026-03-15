@@ -7,7 +7,7 @@ struct CLI: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "distill",
         abstract: "Distill the essence of any YouTube video into your Obsidian vault.",
-        subcommands: [Distill.self, Batch.self, Playlist.self, Init.self, Setup.self],
+        subcommands: [Distill.self, Batch.self, Playlist.self, Init.self, Setup.self, CheckDeps.self, Cache.self],
         defaultSubcommand: Distill.self
     )
 }
@@ -26,6 +26,33 @@ struct SharedOptions: ParsableArguments {
 
     @Option(name: .long, help: "Transcription method: captions, local, cloud (default: captions).")
     var transcription: String?
+
+    @Flag(name: .long, help: "Suppress all non-essential output.")
+    var quiet: Bool = false
+
+    @Flag(name: .long, help: "Show detailed progress and debug information.")
+    var verbose: Bool = false
+
+    @Flag(name: .long, help: "Show what would happen without calling the LLM or writing files.")
+    var dryRun: Bool = false
+
+    @Flag(name: .long, help: "Print the transcript to stdout and exit (no summarization).")
+    var transcriptOnly: Bool = false
+
+    @Option(name: .long, help: "Path to a custom prompt template file.")
+    var prompt: String?
+
+    @Option(name: .long, help: "Output format: markdown, json, yaml (default: markdown).")
+    var format: String?
+
+    @Flag(name: .long, help: "Overwrite existing output even if content hash matches.")
+    var overwrite: Bool = false
+
+    @Option(name: .long, help: "LLM provider: claude, openai, ollama (default: claude).")
+    var provider: String?
+
+    @Option(name: .long, help: "LLM model to use (overrides config and provider default).")
+    var model: String?
 }
 
 // MARK: - distill <url> (default subcommand)
@@ -53,15 +80,27 @@ struct Distill: AsyncParsableCommand {
             cliCookies: shared.cookiesFromBrowser,
             cliFrames: shared.frames,
             cliTranscription: shared.transcription,
+            cliQuiet: shared.quiet,
+            cliVerbose: shared.verbose,
+            cliDryRun: shared.dryRun,
+            cliTranscriptOnly: shared.transcriptOnly,
+            cliPrompt: shared.prompt,
+            cliFormat: shared.format,
+            cliOverwrite: shared.overwrite,
+            cliProvider: shared.provider,
+            cliModel: shared.model,
             configFile: configFile
         )
 
-        guard let apiKey = cfg.apiKey, !apiKey.isEmpty else {
-            printError(DistillError.missingAPIKey)
-            throw ExitCode(DistillError.missingAPIKey.exitCode)
+        // transcript-only mode doesn't need an API key
+        if !cfg.transcriptOnly {
+            guard let apiKey = cfg.apiKey, !apiKey.isEmpty else {
+                printError(DistillError.missingAPIKey)
+                throw ExitCode(DistillError.missingAPIKey.exitCode)
+            }
         }
 
-        let pipeline = try buildPipeline(url: url, cfg: cfg, apiKey: apiKey)
+        let pipeline = try buildPipeline(cfg: cfg)
 
         do {
             try await pipeline.run()
@@ -110,6 +149,15 @@ struct Batch: AsyncParsableCommand {
             cliCookies: shared.cookiesFromBrowser,
             cliFrames: shared.frames,
             cliTranscription: shared.transcription,
+            cliQuiet: shared.quiet,
+            cliVerbose: shared.verbose,
+            cliDryRun: shared.dryRun,
+            cliTranscriptOnly: shared.transcriptOnly,
+            cliPrompt: shared.prompt,
+            cliFormat: shared.format,
+            cliOverwrite: shared.overwrite,
+            cliProvider: shared.provider,
+            cliModel: shared.model,
             configFile: configFile
         )
 
@@ -117,11 +165,12 @@ struct Batch: AsyncParsableCommand {
             printError(DistillError.missingAPIKey)
             throw ExitCode(DistillError.missingAPIKey.exitCode)
         }
+        _ = apiKey
 
         let outputDir = output
         let factory = PipelineFactory { url in
             let cfg = baseCfg.withURL(url, outputDir: outputDir)
-            return try buildPipeline(url: url, cfg: cfg, apiKey: apiKey)
+            return try buildPipeline(cfg: cfg)
         }
 
         let runner = BatchRunner(
@@ -170,6 +219,15 @@ struct Playlist: AsyncParsableCommand {
             cliCookies: shared.cookiesFromBrowser,
             cliFrames: shared.frames,
             cliTranscription: shared.transcription,
+            cliQuiet: shared.quiet,
+            cliVerbose: shared.verbose,
+            cliDryRun: shared.dryRun,
+            cliTranscriptOnly: shared.transcriptOnly,
+            cliPrompt: shared.prompt,
+            cliFormat: shared.format,
+            cliOverwrite: shared.overwrite,
+            cliProvider: shared.provider,
+            cliModel: shared.model,
             configFile: configFile
         )
 
@@ -177,6 +235,7 @@ struct Playlist: AsyncParsableCommand {
             printError(DistillError.missingAPIKey)
             throw ExitCode(DistillError.missingAPIKey.exitCode)
         }
+        _ = apiKey
 
         // Resolve playlist
         logStderr("Resolving playlist...\n")
@@ -194,7 +253,7 @@ struct Playlist: AsyncParsableCommand {
         let outputDir = output
         let factory = PipelineFactory { url in
             let cfg = baseCfg.withURL(url, outputDir: outputDir)
-            return try buildPipeline(url: url, cfg: cfg, apiKey: apiKey)
+            return try buildPipeline(cfg: cfg)
         }
 
         let runner = BatchRunner(
@@ -233,6 +292,53 @@ struct Playlist: AsyncParsableCommand {
         if exitCode != 0 {
             throw ExitCode(exitCode)
         }
+    }
+}
+
+// MARK: - distill check-deps
+
+struct CheckDeps: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "check-deps",
+        abstract: "Check that required external tools are installed."
+    )
+
+    mutating func run() async throws {
+        await DependencyChecker.check()
+    }
+}
+
+// MARK: - distill cache
+
+struct Cache: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "cache",
+        abstract: "Manage the intermediate result cache.",
+        subcommands: [CacheClear.self, CacheStatus.self]
+    )
+}
+
+struct CacheClear: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "clear",
+        abstract: "Clear all cached intermediate results."
+    )
+
+    func run() throws {
+        try CacheManager.clear()
+        print("Cache cleared.")
+    }
+}
+
+struct CacheStatus: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "status",
+        abstract: "Show cache size and entry count."
+    )
+
+    func run() {
+        let status = CacheManager.status()
+        print("Cache: \(status.entries) entries, \(status.formattedSize)")
     }
 }
 
@@ -370,14 +476,38 @@ private func loadConfigFile(path: String?) throws -> ConfigFile? {
     }
 }
 
-private func buildPipeline(url: String, cfg: Configuration, apiKey: String) throws -> Pipeline {
-    let provider = ClaudeProvider(
-        apiKey: apiKey,
-        model: cfg.model,
-        maxTokens: cfg.maxTokens
-    )
+private func buildPipeline(cfg: Configuration) throws -> Pipeline {
+    let summarizer: Summarizer
+    switch cfg.provider {
+    case .claude:
+        guard let apiKey = cfg.apiKey, !apiKey.isEmpty else {
+            throw DistillError.missingAPIKey
+        }
+        let provider = ClaudeProvider(apiKey: apiKey, model: cfg.model, maxTokens: cfg.maxTokens)
+        summarizer = Summarizer(provider: provider)
+    case .openai:
+        let envVar = cfg.openAIAPIKeyEnvVar
+        guard let apiKey = ProcessInfo.processInfo.environment[envVar], !apiKey.isEmpty else {
+            throw DistillError.configurationError("OpenAI provider requires \(envVar) to be set.")
+        }
+        let provider = OpenAIProvider(apiKey: apiKey, model: cfg.model, maxTokens: cfg.maxTokens)
+        summarizer = Summarizer(provider: provider)
+    case .ollama:
+        let provider = OllamaProvider(model: cfg.model)
+        summarizer = Summarizer(provider: provider)
+    }
 
-    let tagGenerator: TagGenerator? = cfg.autoTag ? TagGenerator(provider: provider) : nil
+    let tagGenerator: TagGenerator?
+    if cfg.autoTag {
+        guard let apiKey = cfg.apiKey, !apiKey.isEmpty else {
+            throw DistillError.missingAPIKey
+        }
+        let tagProvider = ClaudeProvider(apiKey: apiKey, model: cfg.model, maxTokens: cfg.maxTokens)
+        tagGenerator = TagGenerator(provider: tagProvider)
+    } else {
+        tagGenerator = nil
+    }
+
     let frameExtractor: FrameExtractor? = cfg.framesEnabled
         ? FrameExtractor(config: cfg.frameConfig, cookiesFromBrowser: cfg.cookiesFromBrowser)
         : nil
@@ -404,7 +534,7 @@ private func buildPipeline(url: String, cfg: Configuration, apiKey: String) thro
             whisperTranscriber: whisperTranscriber,
             cloudTranscriber: cloudTranscriber
         ),
-        summarizer: Summarizer(provider: provider),
+        summarizer: summarizer,
         outputWriter: OutputWriter(),
         tagGenerator: tagGenerator,
         frameExtractor: frameExtractor,

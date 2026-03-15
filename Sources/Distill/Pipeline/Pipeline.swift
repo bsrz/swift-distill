@@ -29,26 +29,41 @@ public struct Pipeline: Sendable {
 
     @discardableResult
     public func run() async throws -> PipelineResult {
+        let isQuiet = configuration.verbosity == .quiet
+        let isVerbose = configuration.verbosity == .verbose
+
         // 1. Validate URL
         let videoID = try URLValidator.validate(configuration.url)
         log("Video ID: \(videoID)")
 
-        // 2. Check API key
-        guard let apiKey = configuration.apiKey, !apiKey.isEmpty else {
-            throw DistillError.missingAPIKey
+        // 2. Check API key (skip for transcript-only mode)
+        if !configuration.transcriptOnly {
+            guard let apiKey = configuration.apiKey, !apiKey.isEmpty else {
+                throw DistillError.missingAPIKey
+            }
+            _ = apiKey
         }
-        _ = apiKey
 
         // 3. Resolve metadata
-        let metadataSpinner = Spinner(message: "Fetching video metadata...")
-        await metadataSpinner.start()
         let metadata: VideoMetadata
-        do {
+        if isQuiet {
             metadata = try await metadataResolver.resolve(url: configuration.url)
-            await metadataSpinner.succeed("Fetched metadata: \(metadata.title)")
-        } catch {
-            await metadataSpinner.fail("Failed to fetch metadata")
-            throw error
+        } else {
+            let metadataSpinner = Spinner(message: "Fetching video metadata...")
+            await metadataSpinner.start()
+            do {
+                metadata = try await metadataResolver.resolve(url: configuration.url)
+                await metadataSpinner.succeed("Fetched metadata: \(metadata.title)")
+            } catch {
+                await metadataSpinner.fail("Failed to fetch metadata")
+                throw error
+            }
+        }
+
+        if isVerbose {
+            log("Channel: \(metadata.channel)")
+            log("Duration: \(metadata.durationString)")
+            log("Published: \(metadata.publishedDate)")
         }
 
         // 4. Acquire transcript + extract frames (concurrently if --frames)
@@ -67,31 +82,76 @@ public struct Pipeline: Sendable {
             frames = []
         }
 
+        if isVerbose {
+            log("Transcript: \(transcript.segments.count) segments, \(transcript.fullText.count) chars (\(transcript.source.rawValue))")
+        }
+
+        // 4b. --transcript-only: print transcript and return early
+        if configuration.transcriptOnly {
+            print(transcript.fullText)
+            return PipelineResult(
+                title: metadata.title,
+                durationString: metadata.durationString,
+                outputPath: "",
+                inputTokens: 0,
+                outputTokens: 0,
+                costEstimate: 0
+            )
+        }
+
         // 5. Generate tags (if enabled)
         var tags = configuration.defaultTags
         if configuration.autoTag, let tagGenerator {
-            let tagSpinner = Spinner(message: "Generating tags...")
-            await tagSpinner.start()
-            do {
-                let generatedTags = try await tagGenerator.generate(from: transcript, metadata: metadata)
-                tags += generatedTags
-                await tagSpinner.succeed("Generated \(generatedTags.count) tags")
-            } catch {
-                await tagSpinner.fail("Tag generation failed (continuing with default tags)")
+            if isQuiet {
+                let generatedTags = try? await tagGenerator.generate(from: transcript, metadata: metadata)
+                tags += generatedTags ?? []
+            } else {
+                let tagSpinner = Spinner(message: "Generating tags...")
+                await tagSpinner.start()
+                do {
+                    let generatedTags = try await tagGenerator.generate(from: transcript, metadata: metadata)
+                    tags += generatedTags
+                    await tagSpinner.succeed("Generated \(generatedTags.count) tags")
+                } catch {
+                    await tagSpinner.fail("Tag generation failed (continuing with default tags)")
+                }
             }
         }
 
         // 6. Build frames table for prompt
         let framesPromptSection = buildFramesPromptSection(frames: frames, metadata: metadata)
 
-        // 7. Summarize
-        let summarySpinner = Spinner(message: "Summarizing with \(configuration.model)...")
-        await summarySpinner.start()
+        // 7. Dry-run: estimate cost and return without calling LLM
+        if configuration.dryRun {
+            let estimatedInputTokens = transcript.fullText.count / 4
+            let costEstimate = Double(estimatedInputTokens * 3 + 4096 * 15) / 1_000_000.0
+            if !isQuiet {
+                log("Dry run — estimated ~\(estimatedInputTokens) input tokens, ~$\(String(format: "%.4f", costEstimate))")
+            }
+            return PipelineResult(
+                title: metadata.title,
+                durationString: metadata.durationString,
+                outputPath: configuration.resolvedOutputPath(for: metadata),
+                inputTokens: estimatedInputTokens,
+                outputTokens: 0,
+                costEstimate: costEstimate
+            )
+        }
+
+        // 8. Load prompt (custom or default)
+        let promptTemplate: String
+        if let customPath = configuration.customPromptPath {
+            let expanded = NSString(string: customPath).expandingTildeInPath
+            promptTemplate = try String(contentsOfFile: expanded, encoding: .utf8)
+        } else {
+            promptTemplate = try PromptLoader.loadDefault()
+        }
+
+        // 9. Summarize
         let summary: Summary
-        do {
-            let prompt = try PromptLoader.loadDefault()
+        if isQuiet {
             let renderedPrompt = PromptLoader.render(
-                template: prompt,
+                template: promptTemplate,
                 title: metadata.title,
                 channel: metadata.channel,
                 duration: metadata.durationString,
@@ -104,17 +164,36 @@ public struct Pipeline: Sendable {
                 metadata: metadata,
                 prompt: renderedPrompt
             )
-            await summarySpinner.succeed("Summarization complete")
-        } catch {
-            await summarySpinner.fail("Summarization failed")
-            throw error
+        } else {
+            let summarySpinner = Spinner(message: "Summarizing with \(configuration.model)...")
+            await summarySpinner.start()
+            do {
+                let renderedPrompt = PromptLoader.render(
+                    template: promptTemplate,
+                    title: metadata.title,
+                    channel: metadata.channel,
+                    duration: metadata.durationString,
+                    transcript: transcript.fullText,
+                    frames: framesPromptSection,
+                    language: "en"
+                )
+                summary = try await summarizer.summarize(
+                    transcript: transcript,
+                    metadata: metadata,
+                    prompt: renderedPrompt
+                )
+                await summarySpinner.succeed("Summarization complete")
+            } catch {
+                await summarySpinner.fail("Summarization failed")
+                throw error
+            }
         }
 
         // Cost estimate (Sonnet pricing: $3/M input, $15/M output)
         let costEstimate = Double(summary.inputTokens * 3 + summary.outputTokens * 15) / 1_000_000.0
         log("Tokens: \(summary.inputTokens) in / \(summary.outputTokens) out (~$\(String(format: "%.4f", costEstimate)))")
 
-        // 8. Resolve output path
+        // 10. Resolve output path
         let outputPath = configuration.resolvedOutputPath(for: metadata)
         guard !outputPath.isEmpty else {
             throw DistillError.configurationError(
@@ -122,24 +201,39 @@ public struct Pipeline: Sendable {
             )
         }
 
-        // 9. Write output
-        let writeSpinner = Spinner(message: "Writing output...")
-        await writeSpinner.start()
-        do {
+        // 11. Write output
+        if isQuiet {
             try outputWriter.write(
                 summary: summary,
                 metadata: metadata,
                 to: outputPath,
-                tags: tags
+                tags: tags,
+                format: configuration.outputFormat,
+                overwrite: configuration.overwrite
             )
-            await writeSpinner.succeed("Written to \(outputPath)")
-        } catch {
-            await writeSpinner.fail("Failed to write output")
-            throw error
+        } else {
+            let writeSpinner = Spinner(message: "Writing output...")
+            await writeSpinner.start()
+            do {
+                try outputWriter.write(
+                    summary: summary,
+                    metadata: metadata,
+                    to: outputPath,
+                    tags: tags,
+                    format: configuration.outputFormat,
+                    overwrite: configuration.overwrite
+                )
+                await writeSpinner.succeed("Written to \(outputPath)")
+            } catch {
+                await writeSpinner.fail("Failed to write output")
+                throw error
+            }
         }
 
-        // 10. Print output path to stdout
-        print(outputPath)
+        // 12. Print output path to stdout
+        if !isQuiet {
+            print(outputPath)
+        }
 
         return PipelineResult(
             title: metadata.title,
