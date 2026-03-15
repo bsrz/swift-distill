@@ -1,6 +1,8 @@
 {
   "permissions": {
     "allow": [
+      "Bash(echo:*)",
+      "Bash(ffmpeg:*)",
       "Bash(git:*)",
       "Bash(swift:*)",
       "Bash(tree:*)",
