@@ -140,10 +140,13 @@ The format is inferred from the file extension (`.json`, `.yaml`, `.yml`), or yo
 ### LLM providers
 
 ```bash
-# Claude (default)
+# Claude API (default, requires ANTHROPIC_API_KEY)
 distill "URL"
 
-# OpenAI
+# Claude CLI — uses your existing Claude Pro/Max subscription, no API key needed
+distill "URL" --provider claude-cli
+
+# OpenAI API
 export OPENAI_API_KEY="sk-..."
 distill "URL" --provider openai
 
@@ -153,6 +156,8 @@ distill "URL" --provider openai --model gpt-4-turbo
 # Ollama (local, no API key needed)
 distill "URL" --provider ollama --model llama3.2
 ```
+
+The `claude-cli` provider shells out to the `claude` CLI (Claude Code) in non-interactive mode. It uses your existing subscription login — no API key required. You must have `claude` installed and authenticated (`claude` will prompt you to log in on first use).
 
 ### Custom prompt
 
@@ -210,6 +215,7 @@ obsidian:
   filename_format: "{date}-{slug}"
   attachments: YouTube/attachments
   image_syntax: markdown          # or: wikilink
+  use_cli: false                  # use Obsidian CLI for writing notes (requires Obsidian 1.12+)
 
 tags:
   default:
@@ -217,7 +223,7 @@ tags:
   auto_tag: true                  # generate tags via LLM
 
 summarization:
-  provider: claude                # claude, openai, ollama
+  provider: claude                # claude, claude-cli, openai, ollama
   model: claude-sonnet-4-6
   api_key_env: ANTHROPIC_API_KEY
   max_tokens: 8192
@@ -250,6 +256,15 @@ The `filename_format` option supports these tokens:
 | `{slug}` | `how-to-build-a-cli-in-swift` |
 
 Default: `{date}-{slug}` produces files like `2025-03-14-how-to-build-a-cli-in-swift.md`.
+
+### Obsidian CLI integration
+
+When `use_cli: true` is set, distill uses the [Obsidian CLI](https://help.obsidian.md/cli) (available in Obsidian 1.12+) to create notes instead of writing files directly. This means:
+- Notes appear instantly in Obsidian without waiting for re-indexing
+- Obsidian's internal link resolution is used
+- Falls back to direct file writes if the Obsidian CLI is unavailable or Obsidian isn't running
+
+Requirements: Obsidian must be running, and the CLI must be registered via **Settings > General > Command line interface > Register CLI**.
 
 ### Obsidian vault structure
 

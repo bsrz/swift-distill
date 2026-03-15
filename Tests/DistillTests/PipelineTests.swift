@@ -1363,4 +1363,101 @@ struct LLMProviderTests {
         let provider: any LLMProviding = OllamaProvider(model: "test")
         #expect(provider is OllamaProvider)
     }
+
+    @Test func claudeCLIProviderConformsToLLMProviding() {
+        let provider: any LLMProviding = ClaudeCLIProvider()
+        #expect(provider is ClaudeCLIProvider)
+    }
+
+    @Test func mergedProviderClaudeCLI() {
+        let cfg = Configuration.merged(
+            url: "https://www.youtube.com/watch?v=jNQXAC9IVRw",
+            cliOutput: nil,
+            cliCookies: nil,
+            cliProvider: "claude-cli",
+            configFile: nil
+        )
+        #expect(cfg.provider == .claudeCLI)
+        #expect(cfg.model == "claude-sonnet-4-6") // shares claude default
+    }
+}
+
+@Suite("ClaudeCLIProvider.parsing")
+struct ClaudeCLIParsingTests {
+    @Test func parsesValidJSONResponse() throws {
+        let json = """
+        {"type":"result","subtype":"success","is_error":false,"duration_ms":6453,"num_turns":1,"result":"# Hello World\\n\\nThis is a test.","stop_reason":"end_turn","session_id":"abc","total_cost_usd":0.05,"usage":{"input_tokens":100,"output_tokens":50},"modelUsage":{"claude-sonnet-4-6":{"inputTokens":100,"outputTokens":50,"costUSD":0.05}}}
+        """
+        let data = json.data(using: .utf8)!
+        let response = try JSONDecoder().decode(ClaudeCLIResponse.self, from: data)
+        #expect(response.result == "# Hello World\n\nThis is a test.")
+        #expect(!response.is_error)
+        #expect(response.usage.input_tokens == 100)
+        #expect(response.usage.output_tokens == 50)
+        #expect(response.modelUsage?["claude-sonnet-4-6"]?.inputTokens == 100)
+    }
+
+    @Test func parsesErrorResponse() throws {
+        let json = """
+        {"type":"result","subtype":"error","is_error":true,"result":"Rate limited","usage":{"input_tokens":0,"output_tokens":0}}
+        """
+        let data = json.data(using: .utf8)!
+        let response = try JSONDecoder().decode(ClaudeCLIResponse.self, from: data)
+        #expect(response.is_error)
+        #expect(response.result == "Rate limited")
+    }
+}
+
+@Suite("Configuration.obsidianCLI")
+struct ConfigurationObsidianCLITests {
+    @Test func defaultUseObsidianCLIIsFalse() {
+        let cfg = Configuration(
+            url: "https://www.youtube.com/watch?v=jNQXAC9IVRw",
+            outputPath: "/test.md"
+        )
+        #expect(cfg.useObsidianCLI == false)
+    }
+
+    @Test func useObsidianCLIFromConfigFile() {
+        let configFile = ConfigFile(
+            obsidian: .init(vault: "/vault", use_cli: true)
+        )
+        let cfg = Configuration.merged(
+            url: "https://www.youtube.com/watch?v=jNQXAC9IVRw",
+            cliOutput: nil,
+            cliCookies: nil,
+            configFile: configFile
+        )
+        #expect(cfg.useObsidianCLI == true)
+    }
+
+    @Test func withURLPreservesObsidianCLI() {
+        let cfg = Configuration(
+            url: "https://www.youtube.com/watch?v=original",
+            outputPath: "/test.md",
+            useObsidianCLI: true
+        )
+        let newCfg = cfg.withURL("https://www.youtube.com/watch?v=new")
+        #expect(newCfg.useObsidianCLI == true)
+    }
+
+    @Test func claudeCLIDoesNotRequireAPIKey() async throws {
+        // Pipeline with claudeCLI provider should not throw missingAPIKey
+        let pipeline = Pipeline(
+            metadataResolver: MockMetadataResolver(metadata: testMetadata),
+            transcriptAcquirer: MockTranscriptAcquirer(transcript: testTranscript),
+            summarizer: MockSummarizer(summary: testSummary),
+            outputWriter: MockOutputWriter { _, _, _, _ in },
+            configuration: Configuration(
+                url: "https://www.youtube.com/watch?v=jNQXAC9IVRw",
+                outputPath: FileManager.default.temporaryDirectory
+                    .appendingPathComponent("cli-test-\(UUID()).md").path,
+                apiKeyEnvVar: "NONEXISTENT_KEY_CLI_TEST",
+                provider: .claudeCLI
+            )
+        )
+
+        let result = try await pipeline.run()
+        #expect(result.title == "Me at the zoo")
+    }
 }

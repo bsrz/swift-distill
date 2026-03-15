@@ -36,8 +36,11 @@ public struct Pipeline: Sendable {
         let videoID = try URLValidator.validate(configuration.url)
         log("Video ID: \(videoID)")
 
-        // 2. Check API key (skip for transcript-only mode)
-        if !configuration.transcriptOnly {
+        // 2. Check API key (skip for transcript-only, claude-cli, and ollama)
+        let needsAPIKey = !configuration.transcriptOnly
+            && configuration.provider != .claudeCLI
+            && configuration.provider != .ollama
+        if needsAPIKey {
             guard let apiKey = configuration.apiKey, !apiKey.isEmpty else {
                 throw DistillError.missingAPIKey
             }

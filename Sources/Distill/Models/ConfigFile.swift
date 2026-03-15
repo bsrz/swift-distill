@@ -32,13 +32,15 @@ public struct ConfigFile: Codable, Sendable {
         public var attachments: String?
         public var filename_format: String?
         public var image_syntax: String?
+        public var use_cli: Bool?
 
-        public init(vault: String? = nil, folder: String? = nil, attachments: String? = nil, filename_format: String? = nil, image_syntax: String? = nil) {
+        public init(vault: String? = nil, folder: String? = nil, attachments: String? = nil, filename_format: String? = nil, image_syntax: String? = nil, use_cli: Bool? = nil) {
             self.vault = vault
             self.folder = folder
             self.attachments = attachments
             self.filename_format = filename_format
             self.image_syntax = image_syntax
+            self.use_cli = use_cli
         }
     }
 

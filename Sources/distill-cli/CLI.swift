@@ -92,8 +92,9 @@ struct Distill: AsyncParsableCommand {
             configFile: configFile
         )
 
-        // transcript-only mode doesn't need an API key
-        if !cfg.transcriptOnly {
+        // transcript-only and claude-cli/ollama don't need an API key
+        let needsAPIKey = !cfg.transcriptOnly && cfg.provider == .claude
+        if needsAPIKey {
             guard let apiKey = cfg.apiKey, !apiKey.isEmpty else {
                 printError(DistillError.missingAPIKey)
                 throw ExitCode(DistillError.missingAPIKey.exitCode)
@@ -161,11 +162,13 @@ struct Batch: AsyncParsableCommand {
             configFile: configFile
         )
 
-        guard let apiKey = baseCfg.apiKey, !apiKey.isEmpty else {
-            printError(DistillError.missingAPIKey)
-            throw ExitCode(DistillError.missingAPIKey.exitCode)
+        if baseCfg.provider == .claude {
+            guard let apiKey = baseCfg.apiKey, !apiKey.isEmpty else {
+                printError(DistillError.missingAPIKey)
+                throw ExitCode(DistillError.missingAPIKey.exitCode)
+            }
+            _ = apiKey
         }
-        _ = apiKey
 
         let outputDir = output
         let factory = PipelineFactory { url in
@@ -231,11 +234,13 @@ struct Playlist: AsyncParsableCommand {
             configFile: configFile
         )
 
-        guard let apiKey = baseCfg.apiKey, !apiKey.isEmpty else {
-            printError(DistillError.missingAPIKey)
-            throw ExitCode(DistillError.missingAPIKey.exitCode)
+        if baseCfg.provider == .claude {
+            guard let apiKey = baseCfg.apiKey, !apiKey.isEmpty else {
+                printError(DistillError.missingAPIKey)
+                throw ExitCode(DistillError.missingAPIKey.exitCode)
+            }
+            _ = apiKey
         }
-        _ = apiKey
 
         // Resolve playlist
         logStderr("Resolving playlist...\n")
@@ -485,6 +490,9 @@ private func buildPipeline(cfg: Configuration) throws -> Pipeline {
         }
         let provider = ClaudeProvider(apiKey: apiKey, model: cfg.model, maxTokens: cfg.maxTokens)
         summarizer = Summarizer(provider: provider)
+    case .claudeCLI:
+        let provider = ClaudeCLIProvider(model: cfg.model)
+        summarizer = Summarizer(provider: provider)
     case .openai:
         let envVar = cfg.openAIAPIKeyEnvVar
         guard let apiKey = ProcessInfo.processInfo.environment[envVar], !apiKey.isEmpty else {
@@ -535,7 +543,7 @@ private func buildPipeline(cfg: Configuration) throws -> Pipeline {
             cloudTranscriber: cloudTranscriber
         ),
         summarizer: summarizer,
-        outputWriter: OutputWriter(),
+        outputWriter: cfg.useObsidianCLI ? ObsidianCLIOutputWriter() : OutputWriter(),
         tagGenerator: tagGenerator,
         frameExtractor: frameExtractor,
         configuration: cfg

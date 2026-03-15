@@ -10,6 +10,8 @@ public struct Shell: Sendable {
     public static func run(
         executable: String,
         arguments: [String] = [],
+        stdin: String? = nil,
+        environment: [String: String]? = nil,
         timeout: TimeInterval = 120
     ) async throws -> ShellResult {
         // Find the executable path
@@ -31,6 +33,8 @@ public struct Shell: Sendable {
         return try await runProcess(
             executablePath: executablePath,
             arguments: arguments,
+            stdin: stdin,
+            environment: environment,
             timeout: timeout
         )
     }
@@ -38,6 +42,8 @@ public struct Shell: Sendable {
     private static func runProcess(
         executablePath: String,
         arguments: [String],
+        stdin: String? = nil,
+        environment: [String: String]? = nil,
         timeout: TimeInterval
     ) async throws -> ShellResult {
         // Run blocking I/O off the cooperative thread pool
@@ -46,10 +52,23 @@ public struct Shell: Sendable {
             process.executableURL = URL(fileURLWithPath: executablePath)
             process.arguments = arguments
 
+            if let environment {
+                process.environment = environment
+            }
+
             let stdoutPipe = Pipe()
             let stderrPipe = Pipe()
             process.standardOutput = stdoutPipe
             process.standardError = stderrPipe
+
+            // Set up stdin if provided
+            if let stdinContent = stdin {
+                let stdinPipe = Pipe()
+                process.standardInput = stdinPipe
+                let stdinData = Data(stdinContent.utf8)
+                stdinPipe.fileHandleForWriting.write(stdinData)
+                stdinPipe.fileHandleForWriting.closeFile()
+            }
 
             // Set up timeout
             let timer = DispatchSource.makeTimerSource()

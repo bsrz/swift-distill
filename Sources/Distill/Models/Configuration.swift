@@ -28,6 +28,7 @@ public struct Configuration: Sendable {
     public let outputFormat: OutputFormat
     public let overwrite: Bool
     public let provider: LLMProvider
+    public let useObsidianCLI: Bool
 
     public enum ImageSyntax: String, Sendable {
         case markdown
@@ -48,6 +49,7 @@ public struct Configuration: Sendable {
 
     public enum LLMProvider: String, Sendable {
         case claude
+        case claudeCLI = "claude-cli"
         case openai
         case ollama
     }
@@ -83,7 +85,8 @@ public struct Configuration: Sendable {
         customPromptPath: String? = nil,
         outputFormat: OutputFormat = .markdown,
         overwrite: Bool = false,
-        provider: LLMProvider = .claude
+        provider: LLMProvider = .claude,
+        useObsidianCLI: Bool = false
     ) {
         self.url = url
         self.outputPath = outputPath
@@ -112,6 +115,7 @@ public struct Configuration: Sendable {
         self.outputFormat = outputFormat
         self.overwrite = overwrite
         self.provider = provider
+        self.useObsidianCLI = useObsidianCLI
     }
 
     /// Resolves the final output path.
@@ -185,7 +189,8 @@ public struct Configuration: Sendable {
             customPromptPath: customPromptPath,
             outputFormat: outputFormat,
             overwrite: overwrite,
-            provider: provider
+            provider: provider,
+            useObsidianCLI: useObsidianCLI
         )
     }
 
@@ -220,7 +225,7 @@ public struct Configuration: Sendable {
 
         let defaultModel: String
         switch provider {
-        case .claude: defaultModel = "claude-sonnet-4-6"
+        case .claude, .claudeCLI: defaultModel = "claude-sonnet-4-6"
         case .openai: defaultModel = "gpt-4o"
         case .ollama: defaultModel = "llama3.2"
         }
@@ -302,7 +307,8 @@ public struct Configuration: Sendable {
             customPromptPath: cliPrompt,
             outputFormat: outputFormat,
             overwrite: cliOverwrite,
-            provider: provider
+            provider: provider,
+            useObsidianCLI: cfg?.obsidian?.use_cli ?? false
         )
     }
 }
