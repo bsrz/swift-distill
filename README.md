@@ -388,7 +388,3 @@ swift test
 # Run directly
 swift run distill-cli "https://www.youtube.com/watch?v=VIDEO_ID" --output /tmp/test.md
 ```
-
-## License
-
-MIT
